@@ -102,7 +102,7 @@
   textarea {
     display: block;
     width: 100%;
-    min-height: 104px;
+    min-height: 128px;
     padding: 10px 12px;
     font: inherit;
     font-size: 15px;
@@ -179,11 +179,11 @@
 <body>
 <main>
   <h1>YouTube → X シェア</h1>
-  <p class="lead">YouTube の URL をこのページに貼り付けるだけで、X 用の投稿内容を作ります。</p>
+  <p class="lead">YouTube か TVer の URL をこのページに貼り付けるだけで、X 用の投稿内容を作ります。</p>
 
   <div class="url-row">
     <input id="url" class="url-input" type="url" inputmode="url" autocomplete="off" spellcheck="false"
-           placeholder="ここに YouTube の URL を貼り付け（Ctrl+V）" autofocus>
+           placeholder="ここに YouTube / TVer の URL を貼り付け（Ctrl+V）" autofocus>
     <button id="pasteBtn" type="button" hidden>貼り付け</button>
   </div>
   <p id="status" class="status" role="status" aria-live="polite"></p>
@@ -280,6 +280,40 @@
     };
   }
 
+  // TVer のエピソード URL（https://tver.jp/episodes/ep…）
+  function parseTverUrl(raw) {
+    const m = String(raw).match(/(?:^|[\s/.])tver\.jp\/(?:[a-z]+\/)?episodes\/(ep[a-z0-9]{6,})/i);
+    if (!m) return null;
+    const id = m[1].toLowerCase();
+    return { id, shareUrl: 'https://tver.jp/episodes/' + id };
+  }
+
+  function parseUrl(raw) {
+    const youtube = parseYouTubeUrl(raw);
+    if (youtube) return { service: 'youtube', ...youtube };
+    const tver = parseTverUrl(raw);
+    if (tver) return { service: 'tver', ...tver };
+    return null;
+  }
+
+  // --- TVer の番組名・タイトル取得（TVer が公開している番組データ） -------
+  async function fetchTverInfo(id) {
+    const res = await fetch('https://statics.tver.jp/content/episode/' + id + '.json');
+    if (!res.ok) throw new Error('TVer HTTP ' + res.status);
+    const data = await res.json();
+    const title = String(data.title || '').trim();
+    // 共有用テキスト（「番組名\n#TVer」）の番組名を使う。シーズン表記も含まれる
+    let series = String((data.share && data.share.text) || '')
+      .split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('#')).join(' ');
+    if (!series && data.seriesID) {
+      try {
+        const sr = await fetch('https://statics.tver.jp/content/series/' + data.seriesID + '.json');
+        if (sr.ok) series = String((await sr.json()).title || '').trim();
+      } catch { /* 番組名なしで続行 */ }
+    }
+    return { series, title };
+  }
+
   // --- タイトル取得（YouTube 公式 oEmbed） ------------------------------
   async function fetchInfo(watchUrl) {
     const res = await fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent(watchUrl));
@@ -311,20 +345,35 @@
     return isDark(0, band - 2) && isDark(h - band + 2, h);
   }
 
+  async function loadCanvas(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const bmp = await createImageBitmap(await res.blob());
+    const canvas = document.createElement('canvas');
+    canvas.width = bmp.width;
+    canvas.height = bmp.height;
+    canvas.getContext('2d', { willReadFrequently: true }).drawImage(bmp, 0, 0);
+    return canvas;
+  }
+
+  async function fetchTverThumbnail(id) {
+    for (const size of ['xlarge', 'large', 'medium']) {
+      try {
+        return await loadCanvas('https://statics.tver.jp/images/content/thumbnail/episode/' + size + '/' + id + '.jpg');
+      } catch {
+        // 次の大きさを試す
+      }
+    }
+    throw new Error('thumbnail unavailable');
+  }
+
   async function fetchThumbnail(id) {
     const variants = ['maxresdefault', 'sddefault', 'hqdefault'];
     for (const name of variants) {
       try {
-        const res = await fetch('https://i.ytimg.com/vi/' + id + '/' + name + '.jpg');
-        if (!res.ok) continue;
-        const bmp = await createImageBitmap(await res.blob());
-        if (bmp.width <= 120) continue; // 「画像なし」のダミー
-
-        const src = document.createElement('canvas');
-        src.width = bmp.width;
-        src.height = bmp.height;
-        const sctx = src.getContext('2d', { willReadFrequently: true });
-        sctx.drawImage(bmp, 0, 0);
+        const src = await loadCanvas('https://i.ytimg.com/vi/' + id + '/' + name + '.jpg');
+        if (src.width <= 120) continue; // 「画像なし」のダミー
+        const sctx = src.getContext('2d');
 
         let out = src;
         if (hasLetterbox(sctx, src.width, src.height)) {
@@ -414,16 +463,40 @@
   }
 
   // --- 生成 -------------------------------------------------------------
+  // サービスごとの取得方法と投稿テキストの形
+  const SERVICES = {
+    youtube: {
+      fetchInfo: (p) => fetchInfo(p.watchUrl),
+      fetchThumb: (p) => fetchThumbnail(p.id),
+      hasInfo: (info) => !!info.title,
+      lines: (info, p) => [info.title || '', '@YouTube', p.shareUrl],
+      caption: (info) => [info.title || '', info.channel || ''], // 画像の下の帯に入れる
+      missing: 'タイトルを取得できませんでした（非公開・削除済み・埋め込み不可の動画など）。1 行目に手入力してください。',
+    },
+    tver: {
+      fetchInfo: (p) => fetchTverInfo(p.id),
+      fetchThumb: (p) => fetchTverThumbnail(p.id),
+      hasInfo: (info) => !!(info.title || info.series),
+      lines: (info, p) => {
+        const head = [info.series, info.title].filter(Boolean);
+        return [...(head.length ? head : ['', '']), '#TVer', p.shareUrl];
+      },
+      caption: () => ['', ''], // TVer はサムネイルのみ
+      missing: '番組情報を取得できませんでした。番組名とタイトルを上の行に手入力してください。',
+    },
+  };
+
   async function generate(raw) {
-    const parsed = parseYouTubeUrl(raw);
+    const parsed = parseUrl(raw);
     if (!parsed) {
       requestSeq++;
       lastKey = '';
       resultEl.hidden = true;
-      if (String(raw).trim()) setStatus('YouTube の動画 URL として読み取れませんでした。', 'err');
+      if (String(raw).trim()) setStatus('YouTube か TVer の動画 URL として読み取れませんでした。', 'err');
       else setStatus('');
       return;
     }
+    const service = SERVICES[parsed.service];
     if (parsed.shareUrl === lastKey) return;
     lastKey = parsed.shareUrl;
 
@@ -435,13 +508,13 @@
     resultEl.hidden = true; // 前の動画の内容を誤って投稿しないように隠す
 
     const [infoResult, thumbCanvasResult] = await Promise.allSettled([
-      fetchInfo(parsed.watchUrl),
-      fetchThumbnail(parsed.id),
+      service.fetchInfo(parsed),
+      service.fetchThumb(parsed),
     ]);
     if (seq !== requestSeq) return; // 新しい貼り付けが来ていたら破棄
 
-    const info = infoResult.status === 'fulfilled' ? infoResult.value : { title: '', channel: '' };
-    const title = info.title;
+    const info = infoResult.status === 'fulfilled' ? infoResult.value : {};
+    const title = service.hasInfo(info);
     if (!title && thumbCanvasResult.status !== 'fulfilled') {
       lastKey = '';
       setStatus('動画が見つかりませんでした。URL を確認してください（ネットワーク未接続の場合も表示されます）。', 'err');
@@ -451,13 +524,13 @@
     let thumbResult = thumbCanvasResult;
     if (thumbCanvasResult.status === 'fulfilled') {
       try {
-        thumbResult = { status: 'fulfilled', value: await composeImage(thumbCanvasResult.value, info.title, info.channel) };
+        thumbResult = { status: 'fulfilled', value: await composeImage(thumbCanvasResult.value, ...service.caption(info)) };
       } catch (reason) {
         thumbResult = { status: 'rejected', reason };
       }
       if (seq !== requestSeq) return;
     }
-    textEl.value = [title, '@YouTube', parsed.shareUrl].join('\n');
+    textEl.value = service.lines(info, parsed).join('\n');
     updateCount();
 
     if (thumbObjectUrl) URL.revokeObjectURL(thumbObjectUrl);
@@ -485,7 +558,7 @@
     resultEl.hidden = false;
 
     if (!title) {
-      setStatus('タイトルを取得できませんでした（非公開・削除済み・埋め込み不可の動画など）。1 行目に手入力してください。', 'err');
+      setStatus(service.missing, 'err');
       textEl.focus();
       textEl.setSelectionRange(0, 0);
     } else if (!pngBlob) {
@@ -596,19 +669,19 @@
       }
     });
   }
-  if (isMobile) urlInput.placeholder = 'YouTube の URL を貼り付け';
+  if (isMobile) urlInput.placeholder = 'YouTube / TVer の URL を貼り付け';
 
   // YouTube アプリの「共有」からこのアプリが選ばれたとき（?text= / ?url= で届く）
   const params = new URLSearchParams(location.search);
   const sharedValues = ['url', 'text', 'title'].map((k) => params.get(k) || '').filter(Boolean);
   if (sharedValues.length) {
-    const shared = sharedValues.find((v) => parseYouTubeUrl(v));
+    const shared = sharedValues.find((v) => parseUrl(v));
     history.replaceState(null, '', location.pathname);
     if (shared) {
-      urlInput.value = parseYouTubeUrl(shared).shareUrl;
+      urlInput.value = parseUrl(shared).shareUrl;
       generate(shared);
     } else {
-      setStatus('共有された内容から YouTube の動画 URL を読み取れませんでした。', 'err');
+      setStatus('共有された内容から YouTube か TVer の動画 URL を読み取れませんでした。', 'err');
     }
   }
 

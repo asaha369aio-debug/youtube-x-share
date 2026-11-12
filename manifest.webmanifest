@@ -1,7 +1,7 @@
 {
   "name": "YouTube → X シェア",
   "short_name": "YT→X シェア",
-  "description": "YouTube の URL から、タイトル・@YouTube・URL・サムネイル画像の X 投稿を作ります。",
+  "description": "YouTube や TVer の URL から、タイトル・URL・サムネイル画像つきの X 投稿を作ります。",
   "lang": "ja",
   "start_url": "./",
   "scope": "./",
