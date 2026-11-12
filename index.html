@@ -127,6 +127,16 @@
     font-size: 12px;
     color: var(--muted);
   }
+  .image-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .image-tools button { font-size: 13px; padding: 6px 12px; }
+  .image-hint { font-size: 12px; color: var(--muted); }
+  body.dragging .result { outline: 2px dashed var(--focus); outline-offset: 2px; }
   .actions {
     display: flex;
     flex-wrap: wrap;
@@ -198,6 +208,13 @@
     <img id="thumb" class="thumb" alt="サムネイル画像">
     <p id="thumbMeta" class="thumb-meta"></p>
 
+    <div class="image-tools">
+      <button id="pickImageBtn" type="button">スクショに差し替える</button>
+      <button id="revertImage" type="button" hidden>サムネイルに戻す</button>
+      <input id="pickImage" type="file" accept="image/*" hidden>
+      <span id="imageHint" class="image-hint">画像の貼り付け（Ctrl+V）やドラッグ＆ドロップでも差し替えられます。</span>
+    </div>
+
     <div class="actions">
       <button id="share" type="button" hidden>共有メニューで X に送る（画像つき）</button>
       <button id="post" class="primary" type="button">画像をコピーして X の投稿画面を開く</button>
@@ -205,7 +222,7 @@
       <button id="copyImage" type="button">画像をコピー</button>
       <a id="saveImage" class="btn" download>画像を保存</a>
     </div>
-    <p id="hintDesktop" class="hint">X の投稿画面が開いたら、入力欄で <kbd>Ctrl</kbd>+<kbd>V</kbd> を押すとサムネイル画像が添付されます。</p>
+    <p id="hintDesktop" class="hint">X の投稿画面が開いたら、入力欄で <kbd>Ctrl</kbd>+<kbd>V</kbd> を押すと画像が添付されます。</p>
     <p id="hintMobile" class="hint" hidden>共有メニューで X を選ぶと、テキストと画像が入った状態で投稿画面が開きます。テキストはクリップボードにもコピーされます。</p>
   </section>
 </main>
@@ -228,6 +245,10 @@
   const pasteBtn = $('pasteBtn');
   const hintDesktopEl = $('hintDesktop');
   const hintMobileEl = $('hintMobile');
+  const pickImageBtn = $('pickImageBtn');
+  const pickImageInput = $('pickImage');
+  const revertBtn = $('revertImage');
+  const imageHintEl = $('imageHint');
 
   const X_LIMIT = 280;
   const X_URL_WEIGHT = 23;
@@ -238,6 +259,7 @@
   let pngBlob = null;      // クリップボード用（PNG のみ対応のため）
   let shareFile = null;    // スマホの共有メニュー用
   let thumbObjectUrl = '';
+  let current = null;      // 表示中の動画（解析結果・番組情報・元のサムネイル）
 
   function setStatus(message, kind = '') {
     statusEl.textContent = message;
@@ -490,6 +512,85 @@
     },
   };
 
+  // 投稿画像を設定する。source はサムネイルか、利用者が用意したスクショ（custom）
+  async function renderImage(source, custom) {
+    const target = current;
+    let t = null;
+    if (source) {
+      try {
+        t = await composeImage(source, ...target.service.caption(target.info));
+      } catch { /* 下で「取得できませんでした」表示 */ }
+    }
+    if (target !== current) return; // 別の動画に切り替わっていたら破棄
+
+    if (thumbObjectUrl) URL.revokeObjectURL(thumbObjectUrl);
+    if (t) {
+      const name = (custom ? 'screenshot_' : 'thumbnail_') + target.parsed.id + '.jpg';
+      pngBlob = t.png;
+      shareFile = new File([t.jpeg], name, { type: 'image/jpeg' });
+      thumbObjectUrl = URL.createObjectURL(t.jpeg);
+      thumbEl.src = thumbObjectUrl;
+      thumbEl.hidden = false;
+      thumbMetaEl.textContent = (custom ? 'スクショ画像 ' : 'サムネイル画像 ') + t.width + ' × ' + t.height +
+        (t.captioned ? '（下の帯にタイトル｜チャンネル名入り）' : '');
+      saveImageEl.href = thumbObjectUrl;
+      saveImageEl.download = name;
+      saveImageEl.hidden = false;
+      copyImageBtn.disabled = false;
+    } else {
+      pngBlob = null;
+      shareFile = null;
+      thumbObjectUrl = '';
+      thumbEl.hidden = true;
+      saveImageEl.hidden = true;
+      copyImageBtn.disabled = true;
+      thumbMetaEl.textContent = custom ? '画像を読み込めませんでした。' : 'サムネイル画像を取得できませんでした。';
+    }
+    revertBtn.hidden = !(custom && t);
+    postBtn.textContent = pngBlob ? '画像をコピーして X の投稿画面を開く' : 'X の投稿画面を開く';
+    updateShareUi();
+    return !!t;
+  }
+
+  // --- 自分で撮ったスクショを投稿画像にする -----------------------------
+  const MAX_SIDE = 1920; // 大きすぎる画像は縮小する（コピーや共有を軽くするため）
+
+  async function useCustomImage(blob) {
+    if (!current || resultEl.hidden) {
+      setStatus('先に YouTube か TVer の URL を貼り付けてください。そのあとでスクショを設定できます。', 'err');
+      return;
+    }
+    const target = current;
+    let canvas;
+    try {
+      const bmp = await createImageBitmap(blob);
+      const scale = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height));
+      canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(bmp.width * scale));
+      canvas.height = Math.max(1, Math.round(bmp.height * scale));
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    } catch {
+      setStatus('画像を読み込めませんでした。PNG か JPEG の画像を使ってください。', 'err');
+      return;
+    }
+    if (target !== current) return;
+    if (await renderImage(canvas, true)) setStatus('スクショを投稿画像に設定しました。', 'ok');
+    else setStatus('画像を読み込めませんでした。', 'err');
+  }
+
+  function firstImageFile(dataTransfer) {
+    if (!dataTransfer) return null;
+    for (const file of dataTransfer.files || []) {
+      if (file.type.startsWith('image/')) return file;
+    }
+    for (const item of dataTransfer.items || []) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) return item.getAsFile();
+    }
+    return null;
+  }
+
   async function generate(raw) {
     const parsed = parseUrl(raw);
     if (!parsed) {
@@ -506,6 +607,7 @@
 
     const seq = ++requestSeq;
     setStatus('タイトルとサムネイルを取得中…');
+    current = null;
     pngBlob = null;
     shareFile = null;
     copyImageBtn.disabled = true;
@@ -525,40 +627,16 @@
       return;
     }
 
-    let thumbResult = thumbCanvasResult;
-    if (thumbCanvasResult.status === 'fulfilled') {
-      try {
-        thumbResult = { status: 'fulfilled', value: await composeImage(thumbCanvasResult.value, ...service.caption(info)) };
-      } catch (reason) {
-        thumbResult = { status: 'rejected', reason };
-      }
-      if (seq !== requestSeq) return;
-    }
+    current = {
+      parsed,
+      info,
+      service,
+      thumbCanvas: thumbCanvasResult.status === 'fulfilled' ? thumbCanvasResult.value : null,
+    };
+    await renderImage(current.thumbCanvas, false);
+    if (seq !== requestSeq) return;
     textEl.value = service.lines(info, parsed).join('\n');
     updateCount();
-
-    if (thumbObjectUrl) URL.revokeObjectURL(thumbObjectUrl);
-    if (thumbResult.status === 'fulfilled') {
-      const t = thumbResult.value;
-      pngBlob = t.png;
-      shareFile = new File([t.jpeg], 'thumbnail_' + parsed.id + '.jpg', { type: 'image/jpeg' });
-      thumbObjectUrl = URL.createObjectURL(t.jpeg);
-      thumbEl.src = thumbObjectUrl;
-      thumbEl.hidden = false;
-      thumbMetaEl.textContent = 'サムネイル画像 ' + t.width + ' × ' + t.height +
-        (t.captioned ? '（下の帯にタイトル｜チャンネル名入り）' : '');
-      saveImageEl.href = thumbObjectUrl;
-      saveImageEl.download = 'thumbnail_' + parsed.id + '.jpg';
-      saveImageEl.hidden = false;
-      copyImageBtn.disabled = false;
-    } else {
-      thumbObjectUrl = '';
-      thumbEl.hidden = true;
-      saveImageEl.hidden = true;
-      thumbMetaEl.textContent = 'サムネイル画像を取得できませんでした。';
-    }
-    postBtn.textContent = pngBlob ? '画像をコピーして X の投稿画面を開く' : 'X の投稿画面を開く';
-    updateShareUi();
     resultEl.hidden = false;
 
     if (!title) {
@@ -638,6 +716,13 @@
 
   // ページのどこに貼り付けても反応する（投稿テキストの編集中は除く）
   document.addEventListener('paste', (e) => {
+    // 画像が貼り付けられたら、スクショとして投稿画像に設定する
+    const image = firstImageFile(e.clipboardData);
+    if (image) {
+      e.preventDefault();
+      useCustomImage(image);
+      return;
+    }
     if (e.target === textEl) return;
     const pasted = (e.clipboardData || window.clipboardData)?.getData('text') || '';
     if (!pasted.trim()) return;
@@ -645,6 +730,39 @@
     urlInput.value = pasted.trim();
     lastKey = '';
     generate(pasted);
+  });
+
+  // スクショをファイルから選ぶ（スマホではギャラリーが開く）
+  pickImageBtn.addEventListener('click', () => pickImageInput.click());
+  pickImageInput.addEventListener('change', () => {
+    const file = pickImageInput.files && pickImageInput.files[0];
+    pickImageInput.value = ''; // 同じ画像をもう一度選べるようにする
+    if (file) useCustomImage(file);
+  });
+  revertBtn.addEventListener('click', async () => {
+    if (!current) return;
+    await renderImage(current.thumbCanvas, false);
+    setStatus('サムネイルに戻しました。', 'ok');
+  });
+  if (isMobile) imageHintEl.hidden = true;
+
+  // 画像ファイルのドラッグ＆ドロップ
+  const hasFiles = (e) => !!e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  document.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    document.body.classList.add('dragging');
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (!e.relatedTarget) document.body.classList.remove('dragging');
+  });
+  document.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    document.body.classList.remove('dragging');
+    const image = firstImageFile(e.dataTransfer);
+    if (image) useCustomImage(image);
+    else setStatus('画像ファイルをドロップしてください。', 'err');
   });
 
   // 手入力やドラッグ＆ドロップにも対応
