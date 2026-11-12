@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube → X シェア</title>
+<meta name="theme-color" content="#0f1419">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --text: #0f1419;
+    --muted: #5b6672;
+    --line: #dfe3e8;
+    --accent: #0f1419;
+    --accent-text: #ffffff;
+    --focus: #1d9bf0;
+    --ok: #0a7d46;
+    --err: #c62828;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116;
+      --panel: #171b22;
+      --text: #e7e9ea;
+      --muted: #8b98a5;
+      --line: #2a313b;
+      --accent: #eff3f4;
+      --accent-text: #0f1419;
+      --ok: #4cc38a;
+      --err: #ff7b72;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  .url-row { display: flex; gap: 8px; }
+  .url-row .url-input { flex: 1; min-width: 0; }
+  .url-row button { flex: none; border-radius: 12px; background: var(--panel); }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", Meiryo, sans-serif;
+    line-height: 1.6;
+  }
+  main {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 40px 16px 64px;
+  }
+  h1 {
+    font-size: 20px;
+    margin: 0 0 4px;
+    letter-spacing: 0.02em;
+  }
+  .lead {
+    margin: 0 0 20px;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .url-input {
+    width: 100%;
+    padding: 14px 16px;
+    font: inherit;
+    font-size: 16px;
+    color: var(--text);
+    background: var(--panel);
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    outline: none;
+  }
+  .url-input:focus { border-color: var(--focus); }
+  .status {
+    min-height: 24px;
+    margin: 8px 2px 0;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--err); }
+
+  .result {
+    margin-top: 16px;
+    padding: 16px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+  }
+  .result[hidden] { display: none; }
+  .label {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .count.over { color: var(--err); font-weight: 600; }
+  textarea {
+    display: block;
+    width: 100%;
+    min-height: 104px;
+    padding: 10px 12px;
+    font: inherit;
+    font-size: 15px;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    resize: vertical;
+    outline: none;
+  }
+  textarea:focus { border-color: var(--focus); }
+  .thumb {
+    display: block;
+    width: 100%;
+    margin-top: 12px;
+    border-radius: 14px;
+    border: 1px solid var(--line);
+    height: auto;
+  }
+  .thumb-meta {
+    margin: 6px 2px 0;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  button, .btn {
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 9px 16px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+  }
+  button:hover, .btn:hover { border-color: var(--muted); }
+  button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  button.primary {
+    flex: 1 1 100%;
+    justify-content: center;
+    padding: 12px 16px;
+    font-size: 15px;
+    background: var(--accent);
+    color: var(--accent-text);
+    border-color: var(--accent);
+  }
+  button.primary:hover { opacity: 0.88; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .hint {
+    margin: 12px 2px 0;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  kbd {
+    font: inherit;
+    font-size: 12px;
+    padding: 1px 6px;
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    background: var(--bg);
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>YouTube → X シェア</h1>
+  <p class="lead">YouTube の URL をこのページに貼り付けるだけで、X 用の投稿内容を作ります。</p>
+
+  <div class="url-row">
+    <input id="url" class="url-input" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+           placeholder="ここに YouTube の URL を貼り付け（Ctrl+V）" autofocus>
+    <button id="pasteBtn" type="button" hidden>貼り付け</button>
+  </div>
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+
+  <section id="result" class="result" hidden>
+    <div class="label">
+      <span>投稿テキスト（編集できます）</span>
+      <span id="count" class="count"></span>
+    </div>
+    <textarea id="text" spellcheck="false"></textarea>
+
+    <img id="thumb" class="thumb" alt="サムネイル画像">
+    <p id="thumbMeta" class="thumb-meta"></p>
+
+    <div class="actions">
+      <button id="share" type="button" hidden>共有メニューで X に送る（画像つき）</button>
+      <button id="post" class="primary" type="button">画像をコピーして X の投稿画面を開く</button>
+      <button id="copyText" type="button">テキストをコピー</button>
+      <button id="copyImage" type="button">画像をコピー</button>
+      <a id="saveImage" class="btn" download>画像を保存</a>
+    </div>
+    <p id="hintDesktop" class="hint">X の投稿画面が開いたら、入力欄で <kbd>Ctrl</kbd>+<kbd>V</kbd> を押すとサムネイル画像が添付されます。</p>
+    <p id="hintMobile" class="hint" hidden>共有メニューで X を選ぶと、テキストと画像が入った状態で投稿画面が開きます。テキストはクリップボードにもコピーされます。</p>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const urlInput = $('url');
+  const statusEl = $('status');
+  const resultEl = $('result');
+  const textEl = $('text');
+  const countEl = $('count');
+  const thumbEl = $('thumb');
+  const thumbMetaEl = $('thumbMeta');
+  const postBtn = $('post');
+  const copyTextBtn = $('copyText');
+  const copyImageBtn = $('copyImage');
+  const saveImageEl = $('saveImage');
+  const shareBtn = $('share');
+  const pasteBtn = $('pasteBtn');
+  const hintDesktopEl = $('hintDesktop');
+  const hintMobileEl = $('hintMobile');
+
+  const X_LIMIT = 280;
+  const X_URL_WEIGHT = 23;
+  const isMobile = navigator.userAgentData?.mobile ?? /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  let requestSeq = 0;      // 後から貼り付けた URL を優先するための番号
+  let lastKey = '';        // 同じ URL での二重生成を防ぐ
+  let pngBlob = null;      // クリップボード用（PNG のみ対応のため）
+  let shareFile = null;    // スマホの共有メニュー用
+  let thumbObjectUrl = '';
+
+  function setStatus(message, kind = '') {
+    statusEl.textContent = message;
+    statusEl.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  // --- URL 解析 ---------------------------------------------------------
+  function parseYouTubeUrl(raw) {
+    const match = String(raw).match(/https?:\/\/[^\s<>"']+/i);
+    let candidate = match ? match[0] : String(raw).trim();
+    if (!candidate) return null;
+    if (!/^https?:\/\//i.test(candidate)) candidate = 'https://' + candidate;
+
+    let u;
+    try { u = new URL(candidate); } catch { return null; }
+
+    const host = u.hostname.replace(/^(www|m|music)\./, '').toLowerCase();
+    const idPattern = /^[A-Za-z0-9_-]{11}$/;
+    let id = '';
+
+    if (host === 'youtu.be') {
+      id = u.pathname.split('/')[1] || '';
+    } else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+      const parts = u.pathname.split('/').filter(Boolean);
+      if (parts[0] === 'watch') id = u.searchParams.get('v') || '';
+      else if (['shorts', 'live', 'embed', 'v'].includes(parts[0])) id = parts[1] || '';
+    } else {
+      return null;
+    }
+    if (!idPattern.test(id)) return null;
+
+    // 再生開始位置（t= / start=）だけ引き継ぎ、追跡用パラメータは落とす
+    const t = (u.searchParams.get('t') || u.searchParams.get('start') || '').trim();
+    const start = /^(\d+s?|(\d+h)?(\d+m)?(\d+s)?)$/.test(t) && t ? t : '';
+
+    return {
+      id,
+      shareUrl: 'https://youtu.be/' + id + (start ? '?t=' + encodeURIComponent(start) : ''),
+      watchUrl: 'https://www.youtube.com/watch?v=' + id,
+    };
+  }
+
+  // --- タイトル取得（YouTube 公式 oEmbed） ------------------------------
+  async function fetchInfo(watchUrl) {
+    const res = await fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent(watchUrl));
+    if (!res.ok) throw new Error('oEmbed HTTP ' + res.status);
+    const data = await res.json();
+    return {
+      title: String(data.title || '').trim(),
+      channel: String(data.author_name || '').trim(),
+    };
+  }
+
+  // --- サムネイル取得 ---------------------------------------------------
+  function canvasToBlob(canvas, type) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob failed'))), type, 0.95);
+    });
+  }
+
+  // 4:3 のサムネイルに付く上下の黒帯を検出する
+  function hasLetterbox(ctx, w, h) {
+    const band = Math.round((h - (w * 9) / 16) / 2);
+    if (band < 4) return false;
+    const isDark = (y0, y1) => {
+      const data = ctx.getImageData(0, y0, w, y1 - y0).data;
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 4) sum += data[i] + data[i + 1] + data[i + 2];
+      return sum / ((data.length / 4) * 3) < 14;
+    };
+    return isDark(0, band - 2) && isDark(h - band + 2, h);
+  }
+
+  async function fetchThumbnail(id) {
+    const variants = ['maxresdefault', 'sddefault', 'hqdefault'];
+    for (const name of variants) {
+      try {
+        const res = await fetch('https://i.ytimg.com/vi/' + id + '/' + name + '.jpg');
+        if (!res.ok) continue;
+        const bmp = await createImageBitmap(await res.blob());
+        if (bmp.width <= 120) continue; // 「画像なし」のダミー
+
+        const src = document.createElement('canvas');
+        src.width = bmp.width;
+        src.height = bmp.height;
+        const sctx = src.getContext('2d', { willReadFrequently: true });
+        sctx.drawImage(bmp, 0, 0);
+
+        let out = src;
+        if (hasLetterbox(sctx, src.width, src.height)) {
+          const h = Math.round((src.width * 9) / 16);
+          out = document.createElement('canvas');
+          out.width = src.width;
+          out.height = h;
+          out.getContext('2d').drawImage(src, 0, Math.round((src.height - h) / 2), src.width, h, 0, 0, src.width, h);
+        }
+        return out;
+      } catch {
+        // 次の解像度を試す
+      }
+    }
+    throw new Error('thumbnail unavailable');
+  }
+
+  // --- 画像の下に「タイトル｜チャンネル名」の帯を付ける -------------------
+  const CAPTION_FONT = '"Yu Gothic UI", "Meiryo", "Hiragino Sans", "Noto Sans JP", sans-serif';
+
+  // 幅に収まらないときは末尾を「…」で省略する
+  function fitText(ctx, text, maxWidth) {
+    if (ctx.measureText(text).width <= maxWidth) return text;
+    const chars = Array.from(text);
+    let lo = 0, hi = chars.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (ctx.measureText(chars.slice(0, mid).join('') + '…').width <= maxWidth) lo = mid;
+      else hi = mid - 1;
+    }
+    return chars.slice(0, lo).join('').trimEnd() + '…';
+  }
+
+  async function composeImage(thumb, title, channel) {
+    const w = thumb.width;
+    const fontSize = Math.max(11, Math.round(w * 0.0125)); // 1280px 幅で 16px
+    const pad = Math.round(fontSize * 0.75);
+    const band = (title || channel) ? Math.round(fontSize * 1.9) : 0;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = thumb.height + band;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(thumb, 0, 0);
+
+    if (band) {
+      ctx.font = fontSize + 'px ' + CAPTION_FONT;
+      ctx.fillStyle = '#333333';
+      ctx.textBaseline = 'middle';
+      const maxWidth = w - pad * 2;
+      // チャンネル名は残し、長いタイトル側を省略する
+      const tail = channel ? '｜' + channel : '';
+      let caption;
+      if (!title) caption = fitText(ctx, channel, maxWidth);
+      else if (ctx.measureText(tail).width > maxWidth * 0.6) caption = fitText(ctx, title + tail, maxWidth);
+      else caption = fitText(ctx, title, maxWidth - ctx.measureText(tail).width) + tail;
+      ctx.fillText(caption, pad, thumb.height + band / 2 + 1);
+    }
+    return {
+      png: await canvasToBlob(canvas, 'image/png'),
+      jpeg: await canvasToBlob(canvas, 'image/jpeg'),
+      width: canvas.width,
+      height: canvas.height,
+      captioned: band > 0,
+    };
+  }
+
+  // --- X の文字数カウント（全角 2・半角 1・URL 23） ----------------------
+  function xWeightedLength(text) {
+    let urls = 0;
+    const rest = text.replace(/https?:\/\/[^\s]+/g, () => { urls++; return ''; });
+    let n = urls * X_URL_WEIGHT;
+    for (const ch of rest.normalize('NFC')) {
+      const cp = ch.codePointAt(0);
+      const light = cp <= 0x10ff || (cp >= 0x2000 && cp <= 0x200d) || (cp >= 0x2010 && cp <= 0x201f) || (cp >= 0x2032 && cp <= 0x2037);
+      n += light ? 1 : 2;
+    }
+    return n;
+  }
+
+  function updateCount() {
+    const n = xWeightedLength(textEl.value);
+    countEl.textContent = n + ' / ' + X_LIMIT;
+    countEl.classList.toggle('over', n > X_LIMIT);
+  }
+
+  // --- 生成 -------------------------------------------------------------
+  async function generate(raw) {
+    const parsed = parseYouTubeUrl(raw);
+    if (!parsed) {
+      requestSeq++;
+      lastKey = '';
+      resultEl.hidden = true;
+      if (String(raw).trim()) setStatus('YouTube の動画 URL として読み取れませんでした。', 'err');
+      else setStatus('');
+      return;
+    }
+    if (parsed.shareUrl === lastKey) return;
+    lastKey = parsed.shareUrl;
+
+    const seq = ++requestSeq;
+    setStatus('タイトルとサムネイルを取得中…');
+    pngBlob = null;
+    shareFile = null;
+    copyImageBtn.disabled = true;
+    resultEl.hidden = true; // 前の動画の内容を誤って投稿しないように隠す
+
+    const [infoResult, thumbCanvasResult] = await Promise.allSettled([
+      fetchInfo(parsed.watchUrl),
+      fetchThumbnail(parsed.id),
+    ]);
+    if (seq !== requestSeq) return; // 新しい貼り付けが来ていたら破棄
+
+    const info = infoResult.status === 'fulfilled' ? infoResult.value : { title: '', channel: '' };
+    const title = info.title;
+    if (!title && thumbCanvasResult.status !== 'fulfilled') {
+      lastKey = '';
+      setStatus('動画が見つかりませんでした。URL を確認してください（ネットワーク未接続の場合も表示されます）。', 'err');
+      return;
+    }
+
+    let thumbResult = thumbCanvasResult;
+    if (thumbCanvasResult.status === 'fulfilled') {
+      try {
+        thumbResult = { status: 'fulfilled', value: await composeImage(thumbCanvasResult.value, info.title, info.channel) };
+      } catch (reason) {
+        thumbResult = { status: 'rejected', reason };
+      }
+      if (seq !== requestSeq) return;
+    }
+    textEl.value = [title, '@YouTube', parsed.shareUrl].join('\n');
+    updateCount();
+
+    if (thumbObjectUrl) URL.revokeObjectURL(thumbObjectUrl);
+    if (thumbResult.status === 'fulfilled') {
+      const t = thumbResult.value;
+      pngBlob = t.png;
+      shareFile = new File([t.jpeg], 'thumbnail_' + parsed.id + '.jpg', { type: 'image/jpeg' });
+      thumbObjectUrl = URL.createObjectURL(t.jpeg);
+      thumbEl.src = thumbObjectUrl;
+      thumbEl.hidden = false;
+      thumbMetaEl.textContent = 'サムネイル画像 ' + t.width + ' × ' + t.height +
+        (t.captioned ? '（下の帯にタイトル｜チャンネル名入り）' : '');
+      saveImageEl.href = thumbObjectUrl;
+      saveImageEl.download = 'thumbnail_' + parsed.id + '.jpg';
+      saveImageEl.hidden = false;
+      copyImageBtn.disabled = false;
+    } else {
+      thumbObjectUrl = '';
+      thumbEl.hidden = true;
+      saveImageEl.hidden = true;
+      thumbMetaEl.textContent = 'サムネイル画像を取得できませんでした。';
+    }
+    postBtn.textContent = pngBlob ? '画像をコピーして X の投稿画面を開く' : 'X の投稿画面を開く';
+    updateShareUi();
+    resultEl.hidden = false;
+
+    if (!title) {
+      setStatus('タイトルを取得できませんでした（非公開・削除済み・埋め込み不可の動画など）。1 行目に手入力してください。', 'err');
+      textEl.focus();
+      textEl.setSelectionRange(0, 0);
+    } else if (!pngBlob) {
+      setStatus('テキストを生成しました（画像は取得できませんでした）。', 'err');
+    } else {
+      setStatus('生成しました。', 'ok');
+    }
+  }
+
+  // --- スマホの共有メニュー（画像とテキストを X アプリへ直接渡す） --------
+  function updateShareUi() {
+    let canShareFile = false;
+    try {
+      canShareFile = !!shareFile && !!navigator.canShare && navigator.canShare({ files: [shareFile] });
+    } catch { /* 非対応ブラウザ */ }
+    const preferShare = canShareFile && isMobile;
+    shareBtn.hidden = !canShareFile;
+    shareBtn.classList.toggle('primary', preferShare);
+    postBtn.classList.toggle('primary', !preferShare);
+    hintMobileEl.hidden = !preferShare;
+    hintDesktopEl.hidden = preferShare || !pngBlob;
+  }
+
+  shareBtn.addEventListener('click', async () => {
+    if (!shareFile) return;
+    const text = textEl.value;
+    // 共有先のアプリがテキストを受け取らない場合に備えてコピーもしておく
+    try { await navigator.clipboard.writeText(text); } catch { /* 共有は続行 */ }
+    try {
+      await navigator.share({ text, files: [shareFile] });
+    } catch (e) {
+      if (e && e.name !== 'AbortError') setStatus('共有できませんでした。「画像を保存」と「テキストをコピー」を使ってください。', 'err');
+    }
+  });
+
+  // --- コピー / 投稿 -----------------------------------------------------
+  async function copyImage() {
+    if (!pngBlob) throw new Error('no image');
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
+  }
+
+  postBtn.addEventListener('click', async () => {
+    let copied = false;
+    if (pngBlob) {
+      try { await copyImage(); copied = true; } catch { /* 下でメッセージ表示 */ }
+    }
+    const intent = 'https://x.com/intent/post?text=' + encodeURIComponent(textEl.value);
+    window.open(intent, '_blank', 'noopener');
+    if (copied) setStatus('画像をコピーしました。X の入力欄で Ctrl+V を押して添付してください。', 'ok');
+    else if (pngBlob) setStatus('画像のコピーに失敗しました。「画像を保存」から添付してください。', 'err');
+  });
+
+  copyTextBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(textEl.value);
+      setStatus('テキストをコピーしました。', 'ok');
+    } catch {
+      textEl.select();
+      setStatus('コピーできませんでした。選択した状態なので Ctrl+C でコピーしてください。', 'err');
+    }
+  });
+
+  copyImageBtn.addEventListener('click', async () => {
+    try {
+      await copyImage();
+      setStatus('画像をコピーしました。', 'ok');
+    } catch {
+      setStatus('画像のコピーに失敗しました。「画像を保存」を使ってください。', 'err');
+    }
+  });
+
+  textEl.addEventListener('input', updateCount);
+
+  // ページのどこに貼り付けても反応する（投稿テキストの編集中は除く）
+  document.addEventListener('paste', (e) => {
+    if (e.target === textEl) return;
+    const pasted = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+    if (!pasted.trim()) return;
+    e.preventDefault();
+    urlInput.value = pasted.trim();
+    lastKey = '';
+    generate(pasted);
+  });
+
+  // 手入力やドラッグ＆ドロップにも対応
+  let debounce = 0;
+  urlInput.addEventListener('input', () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => generate(urlInput.value), 350);
+  });
+  urlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { clearTimeout(debounce); lastKey = ''; generate(urlInput.value); }
+  });
+
+  // スマホ向け：ボタンでクリップボードから貼り付け
+  if (navigator.clipboard && navigator.clipboard.readText) {
+    pasteBtn.hidden = false;
+    pasteBtn.addEventListener('click', async () => {
+      try {
+        const pasted = (await navigator.clipboard.readText()).trim();
+        if (!pasted) { setStatus('クリップボードにテキストがありません。', 'err'); return; }
+        urlInput.value = pasted;
+        lastKey = '';
+        generate(pasted);
+      } catch {
+        setStatus('クリップボードを読み取れませんでした。入力欄に直接貼り付けてください。', 'err');
+        urlInput.focus();
+      }
+    });
+  }
+  if (isMobile) urlInput.placeholder = 'YouTube の URL を貼り付け';
+
+  // YouTube アプリの「共有」からこのアプリが選ばれたとき（?text= / ?url= で届く）
+  const params = new URLSearchParams(location.search);
+  const sharedValues = ['url', 'text', 'title'].map((k) => params.get(k) || '').filter(Boolean);
+  if (sharedValues.length) {
+    const shared = sharedValues.find((v) => parseYouTubeUrl(v));
+    history.replaceState(null, '', location.pathname);
+    if (shared) {
+      urlInput.value = parseYouTubeUrl(shared).shareUrl;
+      generate(shared);
+    } else {
+      setStatus('共有された内容から YouTube の動画 URL を読み取れませんでした。', 'err');
+    }
+  }
+
+  // インストール可能なアプリ（PWA）として動かすための登録
+  if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+    navigator.serviceWorker.register('sw.js').catch(() => { /* 未対応でも本体は動く */ });
+  }
+})();
+</script>
+</body>
+</html>
