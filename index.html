@@ -254,7 +254,7 @@
     </div>
 
     <div id="captionTools" class="caption-tools" hidden>
-      <label class="check"><input id="captionShow" type="checkbox" checked> 画像の下にタイトル｜チャンネル名を入れる</label>
+      <label class="check"><input id="captionShow" type="checkbox" checked> <span id="captionShowLabel">画像の下にタイトル｜チャンネル名を入れる</span></label>
       <label class="size">文字の大きさ
         <input id="captionSize" type="range" min="50" max="300" step="10" value="100">
         <output id="captionSizeOut" for="captionSize">100%</output>
@@ -298,6 +298,7 @@
   const choicesEl = $('choices');
   const captionToolsEl = $('captionTools');
   const captionShowEl = $('captionShow');
+  const captionShowLabelEl = $('captionShowLabel');
   const captionSizeEl = $('captionSize');
   const captionSizeOutEl = $('captionSizeOut');
 
@@ -389,7 +390,13 @@
         if (sr.ok) series = String((await sr.json()).title || '').trim();
       } catch { /* 番組名なしで続行 */ }
     }
-    return { series, title, seriesID: String(data.seriesID || '') };
+    return {
+      series,
+      title,
+      seriesID: String(data.seriesID || ''),
+      provider: String(data.broadcastProviderLabel || '').trim(), // 例: テレビ朝日
+      date: String(data.broadcastDateLabel || '').trim(),         // 例: 3月11日(水)放送分
+    };
   }
 
   // --- タイトル取得（YouTube 公式 oEmbed） ------------------------------
@@ -554,7 +561,7 @@
       alternates: (p) => ['1', '2', '3'].map((n) => ({ label: '場面 ' + n, load: () => fetchThumbnail(p.id, n) })),
       hasInfo: (info) => !!info.title,
       lines: (info, p) => [info.title || '', '@YouTube', p.shareUrl],
-      hasCaption: true,
+      captionLabel: 'タイトル｜チャンネル名',
       caption: (info) => [info.title || '', info.channel || ''], // 画像の下の帯に入れる
       missing: 'タイトルを取得できませんでした（非公開・削除済み・埋め込み不可の動画など）。1 行目に手入力してください。',
     },
@@ -570,8 +577,12 @@
         const head = [info.series, info.title].filter(Boolean);
         return [...(head.length ? head : ['', '']), '#TVer', p.shareUrl];
       },
-      hasCaption: false,
-      caption: () => ['', ''], // TVer はサムネイルのみ
+      captionLabel: '番組名｜タイトル｜テレビ局｜放送日',
+      // 収まらないときは前半（番組名｜タイトル）を省略し、テレビ局と放送日は残す
+      caption: (info) => [
+        [info.series, info.title].filter(Boolean).join('｜'),
+        [info.provider, info.date].filter(Boolean).join('｜'),
+      ],
       missing: '番組情報を取得できませんでした。番組名とタイトルを上の行に手入力してください。',
     },
   };
@@ -583,13 +594,13 @@
     const mySeq = ++renderSeq;
     target.source = source;
     target.custom = custom;
-    const hasCaption = target.service.hasCaption;
-    captionToolsEl.hidden = !hasCaption;
+    const setting = captionSettings[target.parsed.service];
+    captionToolsEl.hidden = false;
     let t = null;
     if (source) {
       try {
-        const [title, channel] = hasCaption && captionShowEl.checked ? target.service.caption(target.info) : ['', ''];
-        t = await composeImage(source, title, channel, Number(captionSizeEl.value) / 100);
+        const [main, tail] = setting.show ? target.service.caption(target.info) : ['', ''];
+        t = await composeImage(source, main, tail, setting.size / 100);
       } catch { /* 下で「取得できませんでした」表示 */ }
     }
     // 別の動画に切り替わったか、設定変更で描き直しが始まっていたら破棄
@@ -606,7 +617,7 @@
       const chosen = target.options[target.selected];
       const kind = custom ? 'スクショ画像' : (chosen && chosen.label !== 'サムネイル' ? (chosen.label.endsWith('画像') ? chosen.label : chosen.label + ' の画像') : 'サムネイル画像');
       thumbMetaEl.textContent = kind + ' ' + t.width + ' × ' + t.height +
-        (t.captioned ? '（下の帯にタイトル｜チャンネル名入り）' : '');
+        (t.captioned ? '（下の帯に' + target.service.captionLabel + '入り）' : '');
       saveImageEl.href = thumbObjectUrl;
       saveImageEl.download = name;
       saveImageEl.hidden = false;
@@ -706,12 +717,30 @@
     else if (ok === false) setStatus('画像を読み込めませんでした。', 'err');
   }
 
-  // --- 画像の下の帯（タイトル｜チャンネル名）の設定 ----------------------
+  // --- 画像の下の帯の設定（YouTube と TVer で別々に保存する） -------------
   const CAPTION_KEY = 'yt-x-share.caption';
+  const captionSettings = {};
+  for (const key of Object.keys(SERVICES)) captionSettings[key] = { show: true, size: 100 };
+
+  function readCaptionSetting(saved, into) {
+    if (!saved || typeof saved !== 'object') return;
+    into.show = saved.show !== false;
+    const size = Number(saved.size);
+    if (size >= Number(captionSizeEl.min) && size <= Number(captionSizeEl.max)) into.size = size;
+  }
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(CAPTION_KEY) || 'null');
+    if (saved && 'show' in saved) {
+      readCaptionSetting(saved, captionSettings.youtube); // 以前の形式（YouTube のみ）
+    } else if (saved) {
+      for (const key of Object.keys(captionSettings)) readCaptionSetting(saved[key], captionSettings[key]);
+    }
+  } catch { /* 既定値のまま */ }
 
   function saveCaptionSettings() {
     try {
-      localStorage.setItem(CAPTION_KEY, JSON.stringify({ show: captionShowEl.checked, size: Number(captionSizeEl.value) }));
+      localStorage.setItem(CAPTION_KEY, JSON.stringify(captionSettings));
     } catch { /* 保存できなくても動作は続ける */ }
   }
 
@@ -720,19 +749,23 @@
     captionSizeEl.disabled = !captionShowEl.checked;
   }
 
-  try {
-    const saved = JSON.parse(localStorage.getItem(CAPTION_KEY) || 'null');
-    if (saved) {
-      captionShowEl.checked = saved.show !== false;
-      const size = Number(saved.size);
-      if (size >= Number(captionSizeEl.min) && size <= Number(captionSizeEl.max)) captionSizeEl.value = String(size);
-    }
-  } catch { /* 既定値のまま */ }
-  updateCaptionControls();
+  // 表示中のサービスの設定を、チェックボックスとスライダーに反映する
+  function syncCaptionControls(serviceKey) {
+    const setting = captionSettings[serviceKey];
+    captionShowEl.checked = setting.show;
+    captionSizeEl.value = String(setting.size);
+    captionShowLabelEl.textContent = '画像の下に' + SERVICES[serviceKey].captionLabel + 'を入れる';
+    updateCaptionControls();
+  }
 
   let captionTimer = 0;
   function onCaptionChange() {
     updateCaptionControls();
+    if (current) {
+      const setting = captionSettings[current.parsed.service];
+      setting.show = captionShowEl.checked;
+      setting.size = Number(captionSizeEl.value);
+    }
     saveCaptionSettings();
     clearTimeout(captionTimer);
     // スライダーを動かしている間に何度も描き直さないよう、少し待つ
@@ -799,6 +832,7 @@
       selected: 0,
     };
     const target = current;
+    syncCaptionControls(parsed.service);
     buildChoices(target);
     await renderImage(target.options.length ? target.options[0].canvas : null, false);
     if (seq !== requestSeq) return;
