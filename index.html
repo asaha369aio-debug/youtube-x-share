@@ -531,7 +531,7 @@
       if (!row.text) continue;
       const size = Math.max(8, Math.round(base * row.size));
       const font = (row.bold ? 'bold ' : '') + size + 'px ' + CAPTION_FONT;
-      const lineHeight = Math.round(size * 1.4);
+      const lineHeight = Math.round(size * (caption.lineHeight || 1.4));
       if (items.length) y += Math.round(base * (row.gapBefore || 0));
       ctx.font = font;
       for (const text of wrapText(ctx, row.text, maxWidth, row.maxLines || 1)) {
@@ -553,7 +553,7 @@
     };
   }
 
-  // caption: null（文字なし）/ {baseScale, rows:[{text, size, bold, color, maxLines, gapBefore}]}
+  // caption: null（文字なし）/ {baseScale, lineHeight, rows:[{text, size, bold, color, maxLines, gapBefore}]}
   async function composeImage(thumb, caption, scale = 1) {
     const w = thumb.width;
     const canvas = document.createElement('canvas');
@@ -633,11 +633,12 @@
       captionLabel: '番組名・タイトル・テレビ局・放送日',
       // TVer の番組ページと同じ並び：番組名（太字）/ タイトル（大きめの太字）/ テレビ局 / 放送日
       caption: (info) => ({
+        lineHeight: 1.12, // 文字どうしが重ならない範囲で行間を詰める
         rows: [
           { text: info.series, size: 0.78, bold: true, color: '#111111', maxLines: 2 },
-          { text: info.title, size: 1, bold: true, color: '#111111', maxLines: 2, gapBefore: 0.1 },
-          { text: info.provider, size: 0.74, color: '#666666', gapBefore: 0.75 },
-          { text: info.date, size: 0.74, color: '#666666', gapBefore: 0.05 },
+          { text: info.title, size: 1, bold: true, color: '#111111', maxLines: 2 },
+          { text: info.provider, size: 0.74, color: '#666666', gapBefore: 0.12 },
+          { text: info.date, size: 0.74, color: '#666666' },
         ],
       }),
       missing: '番組情報を取得できませんでした。番組名とタイトルを上の行に手入力してください。',
