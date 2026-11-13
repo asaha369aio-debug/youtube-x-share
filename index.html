@@ -526,7 +526,7 @@
     const padX = Math.round(base * 1.25);
     const maxWidth = w - padX * 2;
     const items = [];
-    let y = Math.round(base * 0.8);
+    let y = Math.round(base * (caption.padTop ?? 0.8));
     for (const row of caption.rows) {
       if (!row.text) continue;
       const size = Math.max(8, Math.round(base * row.size));
@@ -541,7 +541,7 @@
     }
     if (!items.length) return null;
     return {
-      height: y + Math.round(base * 0.75),
+      height: y + Math.round(base * (caption.padBottom ?? 0.75)),
       draw(c, top) {
         c.textBaseline = 'middle';
         for (const item of items) {
@@ -553,7 +553,7 @@
     };
   }
 
-  // caption: null（文字なし）/ {baseScale, lineHeight, rows:[{text, size, bold, color, maxLines, gapBefore}]}
+  // caption: null（文字なし）/ {baseScale, lineHeight, padTop, padBottom, rows:[{text, size, bold, color, maxLines, gapBefore}]}
   async function composeImage(thumb, caption, scale = 1) {
     const w = thumb.width;
     const canvas = document.createElement('canvas');
@@ -612,6 +612,8 @@
       caption: (info) => ({
         baseScale: 0.72,
         lineHeight: 1.12, // 文字どうしが重ならない範囲で行間を詰める
+        padTop: 0.05, // 文字欄の上下の余白もほぼなくして、縦幅を小さくする
+        padBottom: 0.08,
         rows: [
           { text: info.title, size: 1, bold: true, color: '#111111', maxLines: 2 },
           { text: info.channel, size: 0.76, color: '#666666' },
