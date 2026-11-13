@@ -494,34 +494,111 @@
     return chars.slice(0, lo).join('').trimEnd() + '…';
   }
 
-  async function composeImage(thumb, title, channel, scale = 1) {
-    const w = thumb.width;
-    // 標準は 1280px 幅で 16px。scale で拡大・縮小する
+  // 幅に収まるよう文字単位で折り返す。maxLines を超える分は最後の行を「…」で省略する
+  function wrapText(ctx, text, maxWidth, maxLines) {
+    const lines = [];
+    let rest = Array.from(text);
+    while (rest.length && lines.length < maxLines) {
+      if (lines.length === maxLines - 1) {
+        lines.push(fitText(ctx, rest.join(''), maxWidth));
+        break;
+      }
+      let n = rest.length;
+      if (ctx.measureText(rest.join('')).width > maxWidth) {
+        let lo = 1, hi = rest.length;
+        while (lo < hi) {
+          const mid = Math.ceil((lo + hi) / 2);
+          if (ctx.measureText(rest.slice(0, mid).join('')).width <= maxWidth) lo = mid;
+          else hi = mid - 1;
+        }
+        n = lo;
+      }
+      lines.push(rest.slice(0, n).join('').trimEnd());
+      rest = rest.slice(n);
+      while (rest.length && /\s/.test(rest[0])) rest.shift();
+    }
+    return lines;
+  }
+
+  // 1 行の帯：「main｜tail」。標準は 1280px 幅で 16px
+  function layoutLine(ctx, w, caption, scale) {
+    const main = caption.main || '';
+    const tailText = caption.tail || '';
+    if (!main && !tailText) return null;
     const fontSize = Math.max(8, Math.round(Math.max(11, w * 0.0125) * scale));
     const pad = Math.round(fontSize * 0.75);
-    const band = (title || channel) ? Math.round(fontSize * 1.9) : 0;
+    const height = Math.round(fontSize * 1.9);
+    const font = fontSize + 'px ' + CAPTION_FONT;
+    ctx.font = font;
+    const maxWidth = w - pad * 2;
+    // tail（チャンネル名など）は残し、長い main 側を省略する
+    const tail = tailText ? '｜' + tailText : '';
+    let text;
+    if (!main) text = fitText(ctx, tailText, maxWidth);
+    else if (ctx.measureText(tail).width > maxWidth * 0.6) text = fitText(ctx, main + tail, maxWidth);
+    else text = fitText(ctx, main, maxWidth - ctx.measureText(tail).width) + tail;
+    return {
+      height,
+      draw(c, top) {
+        c.font = font;
+        c.fillStyle = '#333333';
+        c.textBaseline = 'middle';
+        c.fillText(text, pad, top + height / 2 + 1);
+      },
+    };
+  }
 
+  // 複数行の情報欄（TVer の番組ページと同じ並び）。標準は 1280px 幅で基準 35px
+  function layoutStack(ctx, w, caption, scale) {
+    const base = Math.max(10, Math.max(14, w * 0.0275) * scale);
+    const padX = Math.round(base * 1.25);
+    const maxWidth = w - padX * 2;
+    const items = [];
+    let y = Math.round(base * 0.8);
+    for (const row of caption.rows) {
+      if (!row.text) continue;
+      const size = Math.max(8, Math.round(base * row.size));
+      const font = (row.bold ? 'bold ' : '') + size + 'px ' + CAPTION_FONT;
+      const lineHeight = Math.round(size * 1.4);
+      if (items.length) y += Math.round(base * (row.gapBefore || 0));
+      ctx.font = font;
+      for (const text of wrapText(ctx, row.text, maxWidth, row.maxLines || 1)) {
+        items.push({ text, font, color: row.color, y: y + lineHeight / 2 });
+        y += lineHeight;
+      }
+    }
+    if (!items.length) return null;
+    return {
+      height: y + Math.round(base * 0.75),
+      draw(c, top) {
+        c.textBaseline = 'middle';
+        for (const item of items) {
+          c.font = item.font;
+          c.fillStyle = item.color;
+          c.fillText(item.text, padX, top + item.y);
+        }
+      },
+    };
+  }
+
+  // caption: null（文字なし）/ {layout:'line', main, tail} / {layout:'stack', rows:[…]}
+  async function composeImage(thumb, caption, scale = 1) {
+    const w = thumb.width;
     const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = thumb.height + band;
     const ctx = canvas.getContext('2d');
+    let block = null;
+    if (caption) {
+      block = caption.layout === 'stack' ? layoutStack(ctx, w, caption, scale) : layoutLine(ctx, w, caption, scale);
+    }
+    const band = block ? block.height : 0;
+
+    canvas.width = w; // 大きさを変えると描画設定が初期化されるので、計測のあとで設定する
+    canvas.height = thumb.height + band;
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(thumb, 0, 0);
+    if (block) block.draw(ctx, thumb.height);
 
-    if (band) {
-      ctx.font = fontSize + 'px ' + CAPTION_FONT;
-      ctx.fillStyle = '#333333';
-      ctx.textBaseline = 'middle';
-      const maxWidth = w - pad * 2;
-      // チャンネル名は残し、長いタイトル側を省略する
-      const tail = channel ? '｜' + channel : '';
-      let caption;
-      if (!title) caption = fitText(ctx, channel, maxWidth);
-      else if (ctx.measureText(tail).width > maxWidth * 0.6) caption = fitText(ctx, title + tail, maxWidth);
-      else caption = fitText(ctx, title, maxWidth - ctx.measureText(tail).width) + tail;
-      ctx.fillText(caption, pad, thumb.height + band / 2 + 1);
-    }
     return {
       png: await canvasToBlob(canvas, 'image/png'),
       jpeg: await canvasToBlob(canvas, 'image/jpeg'),
@@ -562,7 +639,8 @@
       hasInfo: (info) => !!info.title,
       lines: (info, p) => [info.title || '', '@YouTube', p.shareUrl],
       captionLabel: 'タイトル｜チャンネル名',
-      caption: (info) => [info.title || '', info.channel || ''], // 画像の下の帯に入れる
+      // 画像の下に 1 行の帯で入れる
+      caption: (info) => ({ layout: 'line', main: info.title || '', tail: info.channel || '' }),
       missing: 'タイトルを取得できませんでした（非公開・削除済み・埋め込み不可の動画など）。1 行目に手入力してください。',
     },
     tver: {
@@ -577,12 +655,17 @@
         const head = [info.series, info.title].filter(Boolean);
         return [...(head.length ? head : ['', '']), '#TVer', p.shareUrl];
       },
-      captionLabel: '番組名｜タイトル｜テレビ局｜放送日',
-      // 収まらないときは前半（番組名｜タイトル）を省略し、テレビ局と放送日は残す
-      caption: (info) => [
-        [info.series, info.title].filter(Boolean).join('｜'),
-        [info.provider, info.date].filter(Boolean).join('｜'),
-      ],
+      captionLabel: '番組名・タイトル・テレビ局・放送日',
+      // TVer の番組ページと同じ並び：番組名（太字）/ タイトル（大きめの太字）/ テレビ局 / 放送日
+      caption: (info) => ({
+        layout: 'stack',
+        rows: [
+          { text: info.series, size: 0.78, bold: true, color: '#111111', maxLines: 2 },
+          { text: info.title, size: 1, bold: true, color: '#111111', maxLines: 2, gapBefore: 0.1 },
+          { text: info.provider, size: 0.74, color: '#666666', gapBefore: 0.75 },
+          { text: info.date, size: 0.74, color: '#666666', gapBefore: 0.05 },
+        ],
+      }),
       missing: '番組情報を取得できませんでした。番組名とタイトルを上の行に手入力してください。',
     },
   };
@@ -599,8 +682,8 @@
     let t = null;
     if (source) {
       try {
-        const [main, tail] = setting.show ? target.service.caption(target.info) : ['', ''];
-        t = await composeImage(source, main, tail, setting.size / 100);
+        const caption = setting.show ? target.service.caption(target.info) : null;
+        t = await composeImage(source, caption, setting.size / 100);
       } catch { /* 下で「取得できませんでした」表示 */ }
     }
     // 別の動画に切り替わったか、設定変更で描き直しが始まっていたら破棄
