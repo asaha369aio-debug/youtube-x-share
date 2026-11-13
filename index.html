@@ -389,7 +389,7 @@
         if (sr.ok) series = String((await sr.json()).title || '').trim();
       } catch { /* 番組名なしで続行 */ }
     }
-    return { series, title };
+    return { series, title, seriesID: String(data.seriesID || '') };
   }
 
   // --- タイトル取得（YouTube 公式 oEmbed） ------------------------------
@@ -434,10 +434,11 @@
     return canvas;
   }
 
-  async function fetchTverThumbnail(id) {
+  // type: 'episode'（その回のサムネイル）か 'series'（番組全体の画像）
+  async function fetchTverThumbnail(id, type = 'episode') {
     for (const size of ['xlarge', 'large', 'medium']) {
       try {
-        return await loadCanvas('https://statics.tver.jp/images/content/thumbnail/episode/' + size + '/' + id + '.jpg');
+        return await loadCanvas('https://statics.tver.jp/images/content/thumbnail/' + type + '/' + size + '/' + id + '.jpg');
       } catch {
         // 次の大きさを試す
       }
@@ -549,6 +550,7 @@
       fetchInfo: (p) => fetchInfo(p.watchUrl),
       fetchThumb: (p) => fetchThumbnail(p.id),
       // 公式サムネイルのほかに選べる画像（動画の途中の場面 3 枚）
+      // YouTube が公開している途中の場面はこの 3 枚だけ（4 枚目以降は存在しない）
       alternates: (p) => ['1', '2', '3'].map((n) => ({ label: '場面 ' + n, load: () => fetchThumbnail(p.id, n) })),
       hasInfo: (info) => !!info.title,
       lines: (info, p) => [info.title || '', '@YouTube', p.shareUrl],
@@ -559,6 +561,10 @@
     tver: {
       fetchInfo: (p) => fetchTverInfo(p.id),
       fetchThumb: (p) => fetchTverThumbnail(p.id),
+      // TVer が公開している画像は、その回のサムネイルと番組全体の画像の 2 種類だけ
+      alternates: (p, info) => (info.seriesID
+        ? [{ label: '番組の画像', load: () => fetchTverThumbnail(info.seriesID, 'series') }]
+        : []),
       hasInfo: (info) => !!(info.title || info.series),
       lines: (info, p) => {
         const head = [info.series, info.title].filter(Boolean);
@@ -598,7 +604,7 @@
       thumbEl.src = thumbObjectUrl;
       thumbEl.hidden = false;
       const chosen = target.options[target.selected];
-      const kind = custom ? 'スクショ画像' : (chosen && chosen.label !== 'サムネイル' ? chosen.label + ' の画像' : 'サムネイル画像');
+      const kind = custom ? 'スクショ画像' : (chosen && chosen.label !== 'サムネイル' ? (chosen.label.endsWith('画像') ? chosen.label : chosen.label + ' の画像') : 'サムネイル画像');
       thumbMetaEl.textContent = kind + ' ' + t.width + ' × ' + t.height +
         (t.captioned ? '（下の帯にタイトル｜チャンネル名入り）' : '');
       saveImageEl.href = thumbObjectUrl;
@@ -656,7 +662,8 @@
 
   async function loadAlternates(target) {
     if (!target.service.alternates) return;
-    const specs = target.service.alternates(target.parsed);
+    const specs = target.service.alternates(target.parsed, target.info);
+    if (!specs.length) return;
     const results = await Promise.allSettled(specs.map((s) => s.load()));
     if (target !== current) return;
     results.forEach((r, i) => {
