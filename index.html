@@ -521,27 +521,37 @@
   }
 
   // 画像の下に付ける複数行の情報欄。基準の文字サイズは 1280px 幅で 35px × baseScale
+  // 縦幅を最小にするため、行の高さは決め打ちにせず、実際に描かれる文字の上端・下端を測って積む。
+  // 画像と文字、行と行、文字と下端のあいだには、文字が触れない最小限のすき間だけを入れる。
   function layoutStack(ctx, w, caption, scale) {
     const base = Math.max(10, Math.max(14, w * 0.0275) * (caption.baseScale || 1) * scale);
     const padX = Math.round(base * 1.25);
+    const padY = Math.max(2, Math.round(base * 0.15));
+    const lineGap = Math.max(1, Math.round(base * 0.1));
     const maxWidth = w - padX * 2;
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     const items = [];
-    let y = Math.round(base * (caption.padTop ?? 0.8));
+    let y = padY;
+    ctx.textBaseline = 'middle';
     for (const row of caption.rows) {
       if (!row.text) continue;
       const size = Math.max(8, Math.round(base * row.size));
       const font = (row.bold ? 'bold ' : '') + size + 'px ' + CAPTION_FONT;
-      const lineHeight = Math.round(size * (caption.lineHeight || 1.4));
-      if (items.length) y += Math.round(base * (row.gapBefore || 0));
       ctx.font = font;
-      for (const text of wrapText(ctx, row.text, maxWidth, row.maxLines || 1)) {
-        items.push({ text, font, color: row.color, y: y + lineHeight / 2 });
-        y += lineHeight;
-      }
+      const lines = wrapText(ctx, row.text, maxWidth, row.maxLines || 1);
+      lines.forEach((text, i) => {
+        if (items.length) y += lineGap + (i === 0 ? Math.round(base * (row.gapBefore || 0)) : 0);
+        // 中央線から上下にどれだけ描かれるか。記号だけの行でも極端に詰まらないよう下限を置く
+        const m = ctx.measureText(text);
+        const up = Math.ceil(clamp(m.actualBoundingBoxAscent ?? size * 0.58, size * 0.46, size * 0.7));
+        const down = Math.ceil(clamp(m.actualBoundingBoxDescent ?? size * 0.46, size * 0.29, size * 0.56));
+        items.push({ text, font, color: row.color, y: y + up });
+        y += up + down;
+      });
     }
     if (!items.length) return null;
     return {
-      height: y + Math.round(base * (caption.padBottom ?? 0.75)),
+      height: y + padY,
       draw(c, top) {
         c.textBaseline = 'middle';
         for (const item of items) {
@@ -553,7 +563,7 @@
     };
   }
 
-  // caption: null（文字なし）/ {baseScale, lineHeight, padTop, padBottom, rows:[{text, size, bold, color, maxLines, gapBefore}]}
+  // caption: null（文字なし）/ {baseScale, rows:[{text, size, bold, color, maxLines, gapBefore}]}
   async function composeImage(thumb, caption, scale = 1) {
     const w = thumb.width;
     const canvas = document.createElement('canvas');
@@ -610,10 +620,7 @@
       captionLabel: 'タイトル・チャンネル名',
       // 画像の下に、タイトル（少し大きめの太字）と、その下にチャンネル名（小さめ）を入れる
       caption: (info) => ({
-        baseScale: 0.72,
-        lineHeight: 1.12, // 文字どうしが重ならない範囲で行間を詰める
-        padTop: 0.05, // 文字欄の上下の余白もほぼなくして、縦幅を小さくする
-        padBottom: 0.08,
+        baseScale: 0.576,
         rows: [
           { text: info.title, size: 1, bold: true, color: '#111111', maxLines: 2 },
           { text: info.channel, size: 0.76, color: '#666666' },
@@ -636,11 +643,11 @@
       captionLabel: '番組名・タイトル・テレビ局・放送日',
       // TVer の番組ページと同じ並び：番組名（太字）/ タイトル（大きめの太字）/ テレビ局 / 放送日
       caption: (info) => ({
-        lineHeight: 1.12, // 文字どうしが重ならない範囲で行間を詰める
+        baseScale: 0.8,
         rows: [
           { text: info.series, size: 0.78, bold: true, color: '#111111', maxLines: 2 },
           { text: info.title, size: 1, bold: true, color: '#111111', maxLines: 2 },
-          { text: info.provider, size: 0.74, color: '#666666', gapBefore: 0.12 },
+          { text: info.provider, size: 0.74, color: '#666666', gapBefore: 0.1 },
           { text: info.date, size: 0.74, color: '#666666' },
         ],
       }),
