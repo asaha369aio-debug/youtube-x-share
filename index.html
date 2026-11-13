@@ -611,9 +611,10 @@
       // 画像の下に、タイトル（少し大きめの太字）と、その下にチャンネル名（小さめ）を入れる
       caption: (info) => ({
         baseScale: 0.72,
+        lineHeight: 1.12, // 文字どうしが重ならない範囲で行間を詰める
         rows: [
           { text: info.title, size: 1, bold: true, color: '#111111', maxLines: 2 },
-          { text: info.channel, size: 0.76, color: '#666666', gapBefore: 0.1 },
+          { text: info.channel, size: 0.76, color: '#666666' },
         ],
       }),
       missing: 'タイトルを取得できませんでした（非公開・削除済み・埋め込み不可の動画など）。1 行目に手入力してください。',
