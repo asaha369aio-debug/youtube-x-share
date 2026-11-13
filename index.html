@@ -478,7 +478,7 @@
     throw new Error('thumbnail unavailable');
   }
 
-  // --- 画像の下に「タイトル｜チャンネル名」の帯を付ける -------------------
+  // --- 画像の下に、タイトルなどの文字の欄を付ける -----------------------
   const CAPTION_FONT = '"Yu Gothic UI", "Meiryo", "Hiragino Sans", "Noto Sans JP", sans-serif';
 
   // 幅に収まらないときは末尾を「…」で省略する
@@ -520,37 +520,9 @@
     return lines;
   }
 
-  // 1 行の帯：「main｜tail」。標準は 1280px 幅で 16px
-  function layoutLine(ctx, w, caption, scale) {
-    const main = caption.main || '';
-    const tailText = caption.tail || '';
-    if (!main && !tailText) return null;
-    const fontSize = Math.max(8, Math.round(Math.max(11, w * 0.0125) * scale));
-    const pad = Math.round(fontSize * 0.75);
-    const height = Math.round(fontSize * 1.9);
-    const font = fontSize + 'px ' + CAPTION_FONT;
-    ctx.font = font;
-    const maxWidth = w - pad * 2;
-    // tail（チャンネル名など）は残し、長い main 側を省略する
-    const tail = tailText ? '｜' + tailText : '';
-    let text;
-    if (!main) text = fitText(ctx, tailText, maxWidth);
-    else if (ctx.measureText(tail).width > maxWidth * 0.6) text = fitText(ctx, main + tail, maxWidth);
-    else text = fitText(ctx, main, maxWidth - ctx.measureText(tail).width) + tail;
-    return {
-      height,
-      draw(c, top) {
-        c.font = font;
-        c.fillStyle = '#333333';
-        c.textBaseline = 'middle';
-        c.fillText(text, pad, top + height / 2 + 1);
-      },
-    };
-  }
-
-  // 複数行の情報欄（TVer の番組ページと同じ並び）。標準は 1280px 幅で基準 35px
+  // 画像の下に付ける複数行の情報欄。基準の文字サイズは 1280px 幅で 35px × baseScale
   function layoutStack(ctx, w, caption, scale) {
-    const base = Math.max(10, Math.max(14, w * 0.0275) * scale);
+    const base = Math.max(10, Math.max(14, w * 0.0275) * (caption.baseScale || 1) * scale);
     const padX = Math.round(base * 1.25);
     const maxWidth = w - padX * 2;
     const items = [];
@@ -581,15 +553,12 @@
     };
   }
 
-  // caption: null（文字なし）/ {layout:'line', main, tail} / {layout:'stack', rows:[…]}
+  // caption: null（文字なし）/ {baseScale, rows:[{text, size, bold, color, maxLines, gapBefore}]}
   async function composeImage(thumb, caption, scale = 1) {
     const w = thumb.width;
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
-    let block = null;
-    if (caption) {
-      block = caption.layout === 'stack' ? layoutStack(ctx, w, caption, scale) : layoutLine(ctx, w, caption, scale);
-    }
+    const block = caption ? layoutStack(ctx, w, caption, scale) : null;
     const band = block ? block.height : 0;
 
     canvas.width = w; // 大きさを変えると描画設定が初期化されるので、計測のあとで設定する
@@ -638,9 +607,15 @@
       alternates: (p) => ['1', '2', '3'].map((n) => ({ label: '場面 ' + n, load: () => fetchThumbnail(p.id, n) })),
       hasInfo: (info) => !!info.title,
       lines: (info, p) => [info.title || '', '@YouTube', p.shareUrl],
-      captionLabel: 'タイトル｜チャンネル名',
-      // 画像の下に 1 行の帯で入れる
-      caption: (info) => ({ layout: 'line', main: info.title || '', tail: info.channel || '' }),
+      captionLabel: 'タイトル・チャンネル名',
+      // 画像の下に、タイトル（少し大きめの太字）と、その下にチャンネル名（小さめ）を入れる
+      caption: (info) => ({
+        baseScale: 0.72,
+        rows: [
+          { text: info.title, size: 1, bold: true, color: '#111111', maxLines: 2 },
+          { text: info.channel, size: 0.76, color: '#666666', gapBefore: 0.1 },
+        ],
+      }),
       missing: 'タイトルを取得できませんでした（非公開・削除済み・埋め込み不可の動画など）。1 行目に手入力してください。',
     },
     tver: {
@@ -658,7 +633,6 @@
       captionLabel: '番組名・タイトル・テレビ局・放送日',
       // TVer の番組ページと同じ並び：番組名（太字）/ タイトル（大きめの太字）/ テレビ局 / 放送日
       caption: (info) => ({
-        layout: 'stack',
         rows: [
           { text: info.series, size: 0.78, bold: true, color: '#111111', maxLines: 2 },
           { text: info.title, size: 1, bold: true, color: '#111111', maxLines: 2, gapBefore: 0.1 },
@@ -700,7 +674,7 @@
       const chosen = target.options[target.selected];
       const kind = custom ? 'スクショ画像' : (chosen && chosen.label !== 'サムネイル' ? (chosen.label.endsWith('画像') ? chosen.label : chosen.label + ' の画像') : 'サムネイル画像');
       thumbMetaEl.textContent = kind + ' ' + t.width + ' × ' + t.height +
-        (t.captioned ? '（下の帯に' + target.service.captionLabel + '入り）' : '');
+        (t.captioned ? '（下に' + target.service.captionLabel + '入り）' : '');
       saveImageEl.href = thumbObjectUrl;
       saveImageEl.download = name;
       saveImageEl.hidden = false;
