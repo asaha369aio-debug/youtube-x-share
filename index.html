@@ -136,6 +136,51 @@
   }
   .image-tools button { font-size: 13px; padding: 6px 12px; }
   .image-hint { font-size: 12px; color: var(--muted); }
+
+  /* スクショを 16:9 に切り取る編集画面 */
+  .cropper { margin-top: 12px; }
+  .crop-help { margin: 0 2px 8px; font-size: 13px; color: var(--muted); }
+  .crop-stage {
+    position: relative;
+    margin: 0 auto;
+    overflow: hidden;
+    border-radius: 10px;
+    background: #000;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: crosshair;
+  }
+  .crop-stage canvas { display: block; width: 100%; height: 100%; }
+  .crop-frame {
+    position: absolute;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55), inset 0 0 0 2px #ffffff;
+    cursor: move;
+    outline: none;
+  }
+  .crop-frame:focus-visible { box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55), inset 0 0 0 3px var(--focus); }
+  .crop-handle { position: absolute; width: min(32px, 45%); height: min(32px, 45%); }
+  .crop-handle::after { content: ""; position: absolute; width: min(18px, 70%); height: min(18px, 70%); border: 0 solid #ffffff; }
+  .crop-handle[data-corner="nw"] { left: 0; top: 0; cursor: nwse-resize; }
+  .crop-handle[data-corner="ne"] { right: 0; top: 0; cursor: nesw-resize; }
+  .crop-handle[data-corner="sw"] { left: 0; bottom: 0; cursor: nesw-resize; }
+  .crop-handle[data-corner="se"] { right: 0; bottom: 0; cursor: nwse-resize; }
+  .crop-handle[data-corner="nw"]::after { left: 0; top: 0; border-width: 4px 0 0 4px; }
+  .crop-handle[data-corner="ne"]::after { right: 0; top: 0; border-width: 4px 4px 0 0; }
+  .crop-handle[data-corner="sw"]::after { left: 0; bottom: 0; border-width: 0 0 4px 4px; }
+  .crop-handle[data-corner="se"]::after { right: 0; bottom: 0; border-width: 0 4px 4px 0; }
+  .crop-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+  .crop-actions button { font-size: 13px; padding: 6px 12px; }
+  .crop-actions .apply { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .crop-actions .apply:hover { opacity: 0.88; }
+  /* 編集中は、切り取り前の画像で投稿してしまわないよう他の操作を隠す */
+  .result.cropping .thumb,
+  .result.cropping .thumb-meta,
+  .result.cropping .choices,
+  .result.cropping .image-tools,
+  .result.cropping .caption-tools,
+  .result.cropping .actions,
+  .result.cropping .hint { display: none; }
   .choices {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -244,10 +289,30 @@
     <img id="thumb" class="thumb" alt="サムネイル画像">
     <p id="thumbMeta" class="thumb-meta"></p>
 
+    <div id="cropper" class="cropper" hidden>
+      <p class="crop-help">枠をドラッグすると位置を、四隅をドラッグすると大きさを変えられます（縦 9：横 16）。</p>
+      <div id="cropStage" class="crop-stage">
+        <canvas id="cropCanvas"></canvas>
+        <div id="cropFrame" class="crop-frame" tabindex="0" aria-label="切り取る範囲（矢印キーで移動、Enter で決定、Esc で中止）">
+          <span class="crop-handle" data-corner="nw"></span>
+          <span class="crop-handle" data-corner="ne"></span>
+          <span class="crop-handle" data-corner="sw"></span>
+          <span class="crop-handle" data-corner="se"></span>
+        </div>
+      </div>
+      <div class="crop-actions">
+        <button id="cropApply" class="apply" type="button">この範囲で切り取る</button>
+        <button id="cropCancel" type="button">キャンセル</button>
+        <button id="cropReset" type="button" hidden>トリミングを解除</button>
+        <span id="cropInfo" class="image-hint"></span>
+      </div>
+    </div>
+
     <div id="choices" class="choices" role="group" aria-label="投稿画像を選ぶ" hidden></div>
 
     <div class="image-tools">
       <button id="pickImageBtn" type="button">スクショに差し替える</button>
+      <button id="cropBtn" type="button" hidden>16:9 にトリミング</button>
       <button id="revertImage" type="button" hidden>スクショをやめる</button>
       <input id="pickImage" type="file" accept="image/*" hidden>
       <span id="imageHint" class="image-hint">画像の貼り付け（Ctrl+V）やドラッグ＆ドロップでも差し替えられます。</span>
@@ -301,6 +366,15 @@
   const captionShowLabelEl = $('captionShowLabel');
   const captionSizeEl = $('captionSize');
   const captionSizeOutEl = $('captionSizeOut');
+  const cropBtn = $('cropBtn');
+  const cropperEl = $('cropper');
+  const cropStageEl = $('cropStage');
+  const cropCanvasEl = $('cropCanvas');
+  const cropFrameEl = $('cropFrame');
+  const cropApplyBtn = $('cropApply');
+  const cropCancelBtn = $('cropCancel');
+  const cropResetBtn = $('cropReset');
+  const cropInfoEl = $('cropInfo');
 
   const X_LIMIT = 280;
   const X_URL_WEIGHT = 23;
@@ -658,6 +732,7 @@
   // 投稿画像を設定する。source はサムネイルか、利用者が用意したスクショ（custom）
   // 戻り値: true=設定できた / false=失敗 / null=新しい描画に追い越されたので破棄
   async function renderImage(source, custom) {
+    if (!custom) closeCropper(); // サムネイルや場面に切り替えたら、スクショの切り取りは中止
     const target = current;
     const mySeq = ++renderSeq;
     target.source = source;
@@ -683,7 +758,7 @@
       thumbEl.src = thumbObjectUrl;
       thumbEl.hidden = false;
       const chosen = target.options[target.selected];
-      const kind = custom ? 'スクショ画像' : (chosen && chosen.label !== 'サムネイル' ? (chosen.label.endsWith('画像') ? chosen.label : chosen.label + ' の画像') : 'サムネイル画像');
+      const kind = custom ? (target.customCrop ? 'スクショ画像（16:9 にトリミング）' : 'スクショ画像') : (chosen && chosen.label !== 'サムネイル' ? (chosen.label.endsWith('画像') ? chosen.label : chosen.label + ' の画像') : 'サムネイル画像');
       thumbMetaEl.textContent = kind + ' ' + t.width + ' × ' + t.height +
         (t.captioned ? '（下に' + target.service.captionLabel + '入り）' : '');
       saveImageEl.href = thumbObjectUrl;
@@ -700,6 +775,7 @@
       thumbMetaEl.textContent = custom ? '画像を読み込めませんでした。' : 'サムネイル画像を取得できませんでした。';
     }
     revertBtn.hidden = !(custom && t);
+    cropBtn.hidden = !(custom && t && target.customMaster);
     updateChoiceUi();
     postBtn.textContent = pngBlob ? '画像をコピーして X の投稿画面を開く' : 'X の投稿画面を開く';
     updateShareUi();
@@ -758,6 +834,24 @@
 
   // --- 自分で撮ったスクショを投稿画像にする -----------------------------
   const MAX_SIDE = 1920; // 大きすぎる画像は縮小する（コピーや共有を軽くするため）
+  const MASTER_MAX_SIDE = 3840; // 切り取りの元として手元に残す画像の上限（切り取ってから縮小するため大きめ）
+
+  // 画像の一部（sx, sy, sw, sh）を、dw × dh の canvas に描く
+  function drawRegion(img, sx, sy, sw, sh, dw, dh) {
+    const canvas = document.createElement('canvas');
+    canvas.width = dw;
+    canvas.height = dh;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, dw, dh);
+    return canvas;
+  }
+
+  // 長い辺が maxSide 以下になるよう縮小する
+  function shrink(img, w, h, maxSide) {
+    const s = Math.min(1, maxSide / Math.max(w, h));
+    return drawRegion(img, 0, 0, w, h, Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s)));
+  }
 
   async function useCustomImage(blob) {
     if (!current || resultEl.hidden) {
@@ -765,25 +859,218 @@
       return;
     }
     const target = current;
-    let canvas;
+    let master;
     try {
       const bmp = await createImageBitmap(blob);
-      const scale = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height));
-      canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(bmp.width * scale));
-      canvas.height = Math.max(1, Math.round(bmp.height * scale));
-      const ctx = canvas.getContext('2d');
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+      master = shrink(bmp, bmp.width, bmp.height, MASTER_MAX_SIDE);
+      if (bmp.close) bmp.close();
     } catch {
       setStatus('画像を読み込めませんでした。PNG か JPEG の画像を使ってください。', 'err');
       return;
     }
     if (target !== current) return;
-    const ok = await renderImage(canvas, true);
+    closeCropper();
+    target.customMaster = master; // 16:9 に切り取るときの元画像
+    target.customCrop = null;     // 切り取った範囲（null は切り取りなし）
+    const ok = await renderImage(shrink(master, master.width, master.height, MAX_SIDE), true);
     if (ok) setStatus('スクショを投稿画像に設定しました。', 'ok');
     else if (ok === false) setStatus('画像を読み込めませんでした。', 'err');
   }
+
+  // --- スクショを 16:9（縦 9：横 16）に切り取る ---------------------------
+  // 範囲は元画像（customMaster）上の座標で持つ。高さは常に 幅 × 9 / 16
+  const clampTo = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  let crop = null; // 編集中の範囲 { target, W, H, x, y, w, minW, maxW }
+  let cropDrag = null;
+
+  // 実際に切り出す範囲と、出力する画像の大きさを決める。
+  // 縮小しない大きさのときは、幅を 16 の倍数にそろえて拡大縮小なしでちょうど 16:9 にする
+  function cropPlan(r, W, H) {
+    const h = (r.w * 9) / 16;
+    if (r.w > MAX_SIDE) {
+      return { sx: r.x, sy: r.y, sw: r.w, sh: h, dw: MAX_SIDE, dh: (MAX_SIDE * 9) / 16 };
+    }
+    const sw = Math.min(W, Math.max(16, Math.floor(r.w / 16) * 16));
+    const sh = (sw * 9) / 16;
+    const sx = Math.round(clampTo(r.x + (r.w - sw) / 2, 0, W - sw));
+    const sy = Math.round(clampTo(r.y + (h - sh) / 2, 0, H - sh));
+    return { sx, sy, sw, sh, dw: sw, dh: sh };
+  }
+
+  function drawCropFrame() {
+    const { W, H, x, y, w } = crop;
+    const s = cropFrameEl.style;
+    s.left = (x / W) * 100 + '%';
+    s.top = (y / H) * 100 + '%';
+    s.width = (w / W) * 100 + '%';
+    s.height = ((w * 9) / 16 / H) * 100 + '%';
+    const plan = cropPlan(crop, W, H);
+    cropInfoEl.textContent = '切り取り後 ' + plan.dw + ' × ' + plan.dh;
+  }
+
+  function moveCropTo(x, y) {
+    crop.x = clampTo(x, 0, crop.W - crop.w);
+    crop.y = clampTo(y, 0, crop.H - (crop.w * 9) / 16);
+    drawCropFrame();
+  }
+
+  // 画面に収まる大きさで元画像を表示する
+  function layoutCropStage() {
+    if (!crop) return;
+    const availW = cropperEl.clientWidth;
+    const availH = Math.max(200, window.innerHeight * 0.65);
+    const s = Math.min(availW / crop.W, availH / crop.H);
+    cropStageEl.style.width = Math.floor(crop.W * s) + 'px';
+    cropStageEl.style.height = Math.floor(crop.H * s) + 'px';
+  }
+
+  function openCropper() {
+    const target = current;
+    if (!target || !target.custom || !target.customMaster) return;
+    const m = target.customMaster;
+    const W = m.width, H = m.height;
+    const maxW = Math.min(W, (H * 16) / 9);
+    // 前回切り取った範囲があればそこから、なければ真ん中の最大の範囲から始める
+    const start = target.customCrop || { w: maxW, x: (W - maxW) / 2, y: (H - (maxW * 9) / 16) / 2 };
+    crop = { target, W, H, maxW, minW: Math.min(maxW, Math.max(80, maxW * 0.15)), ...start };
+
+    const view = Math.min(1, 1600 / Math.max(W, H));
+    cropCanvasEl.width = Math.max(1, Math.round(W * view));
+    cropCanvasEl.height = Math.max(1, Math.round(H * view));
+    const cctx = cropCanvasEl.getContext('2d');
+    cctx.imageSmoothingQuality = 'high';
+    cctx.drawImage(m, 0, 0, cropCanvasEl.width, cropCanvasEl.height);
+
+    cropResetBtn.hidden = !target.customCrop;
+    resultEl.classList.add('cropping');
+    cropperEl.hidden = false;
+    layoutCropStage();
+    drawCropFrame();
+    cropFrameEl.focus({ preventScroll: true });
+    cropperEl.scrollIntoView({ block: 'nearest' });
+  }
+
+  function closeCropper() {
+    if (!crop) return;
+    crop = null;
+    cropDrag = null;
+    cropperEl.hidden = true;
+    resultEl.classList.remove('cropping');
+    cropCanvasEl.width = 1; // 表示用の画像を手放す
+    cropCanvasEl.height = 1;
+  }
+
+  async function applyCrop() {
+    if (!crop) return;
+    const { target, W, H } = crop;
+    const rect = { x: crop.x, y: crop.y, w: crop.w };
+    closeCropper();
+    if (target !== current || !target.custom) return;
+    const p = cropPlan(rect, W, H);
+    const canvas = drawRegion(target.customMaster, p.sx, p.sy, p.sw, p.sh, p.dw, p.dh);
+    target.customCrop = rect;
+    const ok = await renderImage(canvas, true);
+    if (ok) setStatus('スクショを 16:9 にトリミングしました。', 'ok');
+  }
+
+  async function resetCrop() {
+    if (!crop) return;
+    const { target } = crop;
+    closeCropper();
+    if (target !== current || !target.custom) return;
+    target.customCrop = null;
+    const m = target.customMaster;
+    if (await renderImage(shrink(m, m.width, m.height, MAX_SIDE), true)) {
+      setStatus('トリミングを解除して、スクショ全体に戻しました。', 'ok');
+    }
+  }
+
+  // ポインタの位置を元画像上の座標にする
+  function cropPoint(e) {
+    const rect = cropStageEl.getBoundingClientRect();
+    return {
+      x: ((e.clientX - rect.left) * crop.W) / rect.width,
+      y: ((e.clientY - rect.top) * crop.H) / rect.height,
+    };
+  }
+
+  cropStageEl.addEventListener('pointerdown', (e) => {
+    if (!crop || cropDrag || e.button !== 0) return;
+    e.preventDefault();
+    const p = cropPoint(e);
+    const handle = e.target.closest('.crop-handle');
+    if (handle) {
+      // 押した角の反対側の角を固定して、大きさを変える
+      const corner = handle.dataset.corner;
+      const right = corner.includes('e'), bottom = corner.includes('s');
+      cropDrag = {
+        mode: 'resize',
+        dirX: right ? 1 : -1,
+        dirY: bottom ? 1 : -1,
+        ax: right ? crop.x : crop.x + crop.w,
+        ay: bottom ? crop.y : crop.y + (crop.w * 9) / 16,
+      };
+    } else {
+      // 枠の外を押したときは、その位置へ枠を移してからドラッグを続ける
+      if (!e.target.closest('.crop-frame')) moveCropTo(p.x - crop.w / 2, p.y - (crop.w * 9) / 32);
+      cropDrag = { mode: 'move', px: p.x, py: p.y, x: crop.x, y: crop.y };
+    }
+    cropDrag.id = e.pointerId;
+    cropStageEl.setPointerCapture(e.pointerId);
+    cropFrameEl.focus({ preventScroll: true });
+  });
+
+  cropStageEl.addEventListener('pointermove', (e) => {
+    if (!crop || !cropDrag || e.pointerId !== cropDrag.id) return;
+    const p = cropPoint(e);
+    const d = cropDrag;
+    if (d.mode === 'move') {
+      moveCropTo(d.x + p.x - d.px, d.y + p.y - d.py);
+      return;
+    }
+    // 角は 16:9 の対角線上を動く。ポインタにいちばん近い対角線上の点まで広げる。
+    // 固定した角から画像の端までが上限
+    const room = Math.min(d.dirX > 0 ? crop.W - d.ax : d.ax, ((d.dirY > 0 ? crop.H - d.ay : d.ay) * 16) / 9);
+    const want = (((p.x - d.ax) * d.dirX * 16 + (p.y - d.ay) * d.dirY * 9) / (16 * 16 + 9 * 9)) * 16;
+    const w = clampTo(want, Math.min(crop.minW, room), room);
+    crop.w = w;
+    crop.x = d.dirX > 0 ? d.ax : d.ax - w;
+    crop.y = d.dirY > 0 ? d.ay : d.ay - (w * 9) / 16;
+    drawCropFrame();
+  });
+
+  const endCropDrag = (e) => {
+    if (cropDrag && e.pointerId === cropDrag.id) cropDrag = null;
+  };
+  cropStageEl.addEventListener('pointerup', endCropDrag);
+  cropStageEl.addEventListener('pointercancel', endCropDrag);
+  cropStageEl.addEventListener('lostpointercapture', endCropDrag);
+
+  cropFrameEl.addEventListener('keydown', (e) => {
+    if (!crop) return;
+    const step = (e.shiftKey ? 0.1 : 0.01) * Math.max(crop.W, crop.H);
+    const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+    if (moves[e.key]) {
+      e.preventDefault();
+      moveCropTo(crop.x + moves[e.key][0], crop.y + moves[e.key][1]);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      applyCrop();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeCropper();
+      cropBtn.focus();
+    }
+  });
+
+  cropBtn.addEventListener('click', openCropper);
+  cropApplyBtn.addEventListener('click', applyCrop);
+  cropResetBtn.addEventListener('click', resetCrop);
+  cropCancelBtn.addEventListener('click', () => {
+    closeCropper();
+    cropBtn.focus();
+  });
+  window.addEventListener('resize', layoutCropStage);
 
   // --- 画像の下の帯の設定（YouTube と TVer で別々に保存する） -------------
   const CAPTION_KEY = 'yt-x-share.caption';
@@ -860,6 +1147,7 @@
     if (!parsed) {
       requestSeq++;
       lastKey = '';
+      closeCropper();
       resultEl.hidden = true;
       if (String(raw).trim()) setStatus('YouTube か TVer の動画 URL として読み取れませんでした。', 'err');
       else setStatus('');
@@ -871,6 +1159,7 @@
 
     const seq = ++requestSeq;
     setStatus('タイトルとサムネイルを取得中…');
+    closeCropper();
     current = null;
     pngBlob = null;
     shareFile = null;
