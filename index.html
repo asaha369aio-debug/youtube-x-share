@@ -270,11 +270,11 @@
 <body>
 <main>
   <h1>YouTube → X シェア</h1>
-  <p class="lead">YouTube か TVer の URL をこのページに貼り付けるだけで、X 用の投稿内容を作ります。</p>
+  <p class="lead">YouTube・TVer・Spotify・Netflix・U-NEXT の URL をこのページに貼り付けるだけで、X 用の投稿内容を作ります。</p>
 
   <div class="url-row">
     <input id="url" class="url-input" type="url" inputmode="url" autocomplete="off" spellcheck="false"
-           placeholder="ここに YouTube / TVer の URL を貼り付け（Ctrl+V）" autofocus>
+           placeholder="ここに URL を貼り付け（Ctrl+V）" autofocus>
     <button id="pasteBtn" type="button" hidden>貼り付け</button>
   </div>
   <p id="status" class="status" role="status" aria-live="polite"></p>
@@ -441,11 +441,95 @@
     return { id, shareUrl: 'https://tver.jp/episodes/' + id };
   }
 
+  // テキストの中の URL をすべて取り出す（https:// の無い URL だけの貼り付けにも対応）
+  function findUrls(raw) {
+    const text = String(raw).trim();
+    const found = text.match(/https?:\/\/[^\s<>"'「」『』（）]+/gi) || [];
+    if (!found.length && text && !/\s/.test(text)) found.push('https://' + text);
+    const urls = [];
+    for (const s of found) {
+      try { urls.push(new URL(s)); } catch { /* 読めない URL は飛ばす */ }
+    }
+    return urls;
+  }
+  const hostIs = (u, domain) => u.hostname.toLowerCase() === domain || u.hostname.toLowerCase().endsWith('.' + domain);
+
+  // アプリの共有で届く文（例：「作品名」を観よう！ https://…）から、かぎかっこ内の作品名を拾う
+  function titleFromSharedText(raw) {
+    const rest = String(raw).replace(/https?:\/\/[^\s]+/gi, ' ');
+    const m = rest.match(/『([^』\n]{1,100})』|「([^」\n]{1,100})」|“([^”\n]{1,100})”|"([^"\n]{1,100})"/);
+    return m ? (m[1] || m[2] || m[3] || m[4]).trim() : '';
+  }
+
+  // Spotify の曲・アルバム・プレイリストなど（https://open.spotify.com/track/… や spotify:track:…）
+  const SPOTIFY_TYPES = {
+    track: '曲', album: 'アルバム', playlist: 'プレイリスト', artist: 'アーティスト',
+    show: 'ポッドキャスト', episode: 'エピソード', audiobook: 'オーディオブック', chapter: 'チャプター',
+  };
+  function parseSpotifyUrl(raw) {
+    const text = String(raw);
+    const types = Object.keys(SPOTIFY_TYPES).join('|');
+    const m =
+      // 地域の表記（/intl-ja/）や埋め込み（/embed/）が間に入っていてもよい。追跡用の ?si= などは落とす
+      text.match(new RegExp('open\\.spotify\\.com/(?:[^\\s/?#]+/)*?(' + types + ')/([A-Za-z0-9]{22})(?![A-Za-z0-9])', 'i')) ||
+      text.match(new RegExp('spotify:(' + types + '):([A-Za-z0-9]{22})(?![A-Za-z0-9])', 'i'));
+    if (m) {
+      const type = m[1].toLowerCase();
+      return { id: m[2], type, shareUrl: 'https://open.spotify.com/' + type + '/' + m[2] };
+    }
+    // アプリの共有で付くことがある短縮リンク。種類は oEmbed の結果から調べる
+    const short = text.match(/https?:\/\/spotify\.link\/([A-Za-z0-9]+)/i);
+    if (short) return { id: short[1], type: '', shareUrl: 'https://spotify.link/' + short[1] };
+    return null;
+  }
+
+  // Netflix の作品ページ（https://www.netflix.com/title/…）。地域の表記（/jp/）や追跡用の ? 以降は落とす
+  function parseNetflixUrl(raw) {
+    for (const u of findUrls(raw)) {
+      if (!hostIs(u, 'netflix.com')) continue;
+      const path = u.pathname.match(/\/(title|watch)\/(\d+)/i);
+      const jbv = u.searchParams.get('jbv') || ''; // 一覧画面で作品を開いたときの形（/browse?jbv=…）
+      let id = '', kind = 'title';
+      if (path) { id = path[2]; kind = path[1].toLowerCase(); }
+      else if (/^\d+$/.test(jbv)) id = jbv;
+      if (id) return { id, shareUrl: 'https://www.netflix.com/' + kind + '/' + id, sharedTitle: titleFromSharedText(raw) };
+    }
+    return null;
+  }
+
+  // U-NEXT の作品ページ（https://video.unext.jp/title/SID…）。再生画面の URL も作品ページにする
+  function parseUnextUrl(raw) {
+    for (const u of findUrls(raw)) {
+      if (!hostIs(u, 'unext.jp')) continue;
+      const sharedTitle = titleFromSharedText(raw);
+      const sid = u.pathname.match(/\/(SID\d+)/i);
+      if (sid) {
+        const id = sid[1].toUpperCase();
+        return { id, shareUrl: 'https://video.unext.jp/title/' + id, sharedTitle };
+      }
+      const book = u.pathname.match(/\/(BSD\d+)/i); // 電子書籍
+      if (book) {
+        const id = book[1].toUpperCase();
+        return { id, shareUrl: 'https://video.unext.jp/book/title/' + id, sharedTitle };
+      }
+      // 形がわからないページも、追跡用の ? 以降だけ落としてそのまま使う
+      const last = u.pathname.split('/').filter(Boolean).pop();
+      if (last) return { id: last.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'unext', shareUrl: u.origin + u.pathname, sharedTitle };
+    }
+    return null;
+  }
+
   function parseUrl(raw) {
     const youtube = parseYouTubeUrl(raw);
     if (youtube) return { service: 'youtube', ...youtube };
     const tver = parseTverUrl(raw);
     if (tver) return { service: 'tver', ...tver };
+    const spotify = parseSpotifyUrl(raw);
+    if (spotify) return { service: 'spotify', ...spotify };
+    const netflix = parseNetflixUrl(raw);
+    if (netflix) return { service: 'netflix', ...netflix };
+    const unext = parseUnextUrl(raw);
+    if (unext) return { service: 'unext', ...unext };
     return null;
   }
 
@@ -482,6 +566,57 @@
       title: String(data.title || '').trim(),
       channel: String(data.author_name || '').trim(),
     };
+  }
+
+  // --- Spotify のタイトル・画像取得（Spotify 公式 oEmbed） ----------------
+  // タイトルと画像の両方で使うので、1 回だけ取りに行く
+  function fetchSpotifyOembed(p) {
+    if (!p.oembed) {
+      p.oembed = fetch('https://open.spotify.com/oembed?url=' + encodeURIComponent(p.shareUrl)).then((res) => {
+        if (!res.ok) throw new Error('Spotify oEmbed HTTP ' + res.status);
+        return res.json();
+      });
+    }
+    return p.oembed;
+  }
+
+  async function fetchSpotifyInfo(p) {
+    const data = await fetchSpotifyOembed(p);
+    // 短縮リンクのときは、埋め込み用 URL から種類と正式な URL を調べる
+    const real = parseSpotifyUrl(String(data.iframe_url || ''));
+    return {
+      title: String(data.title || '').trim(),
+      type: p.type || (real ? real.type : ''),
+      url: !p.type && real ? real.shareUrl : '',
+    };
+  }
+
+  // oEmbed の画像は 300px 前後なので、同じ画像の 640px 版を先に試す
+  const SPOTIFY_LARGER = [
+    ['ab67616d00001e02', 'ab67616d0000b273'], // 曲・アルバムのジャケット
+    ['ab67616d00004851', 'ab67616d0000b273'],
+    ['ab67616100005174', 'ab6761610000e5eb'], // アーティスト
+    ['ab67706f00000002', 'ab67706f00000003'], // Spotify が作ったプレイリスト
+    ['ab67656300005f1f', 'ab6765630000ba8a'], // ポッドキャスト
+  ];
+
+  async function fetchSpotifyThumbnail(p) {
+    const url = String((await fetchSpotifyOembed(p)).thumbnail_url || '');
+    if (!/^https:\/\//i.test(url)) throw new Error('no thumbnail');
+    const candidates = [];
+    for (const [small, large] of SPOTIFY_LARGER) {
+      if (url.includes('/image/' + small)) candidates.push(url.replace('/image/' + small, '/image/' + large));
+    }
+    if (/mosaic\.scdn\.co\/\d+\//i.test(url)) candidates.push(url.replace(/(mosaic\.scdn\.co\/)\d+\//i, '$1640/'));
+    candidates.push(url);
+    for (const candidate of candidates) {
+      try {
+        return await loadCanvas(candidate);
+      } catch {
+        // 次の候補を試す
+      }
+    }
+    throw new Error('thumbnail unavailable');
   }
 
   // --- サムネイル取得 ---------------------------------------------------
@@ -727,7 +862,53 @@
       }),
       missing: '番組情報を取得できませんでした。番組名とタイトルを上の行に手入力してください。',
     },
+    spotify: {
+      fetchInfo: fetchSpotifyInfo,
+      fetchThumb: fetchSpotifyThumbnail,
+      thumbLabel: 'カバー画像',
+      hasInfo: (info) => !!info.title,
+      lines: (info, p) => [info.title || '', '#Spotify', info.url || p.shareUrl],
+      captionLabel: 'タイトル',
+      // 画像の下に、タイトル（太字）と、その下に「Spotify・曲」などの種類（小さめ）を入れる
+      caption: (info) => (info.title ? {
+        baseScale: 0.576,
+        rows: [
+          { text: info.title, size: 1.1, bold: true, color: '#111111', maxLines: 2 },
+          { text: 'Spotify' + (SPOTIFY_TYPES[info.type] ? '・' + SPOTIFY_TYPES[info.type] : ''), size: 0.76, color: '#666666' },
+        ],
+      } : null),
+      missing: 'タイトルを取得できませんでした（非公開のプレイリストなど）。1 行目に手入力してください。',
+    },
+    // Netflix と U-NEXT は、他のサイトから作品情報や画像を読み取れない（CORS で拒否される）。
+    // 作品名は共有テキストのかぎかっこ内か手入力、画像はスクショで用意してもらう
+    netflix: manualService('Netflix', '#Netflix'),
+    unext: manualService('U-NEXT', '#UNEXT'),
   };
+
+  function manualService(name, tag) {
+    return {
+      manual: true,
+      name,
+      fetchInfo: (p) => ({ title: p.sharedTitle || '' }),
+      hasInfo: (info) => !!info.title,
+      lines: (info, p) => [info.title || '', tag, p.shareUrl],
+      captionLabel: '作品名',
+      captionToggleLabel: '画像の下に作品名（投稿テキストの 1 行目）を入れる',
+      captionFromText: true,
+      // 投稿テキストの 1 行目を作品名として、画像の下に入れる
+      caption: (info, text) => {
+        const first = String(text || '').split('\n')[0].trim();
+        if (!first || first.startsWith('#') || /^https?:\/\//i.test(first)) return null;
+        return {
+          baseScale: 0.576,
+          rows: [
+            { text: first, size: 1.1, bold: true, color: '#111111', maxLines: 2 },
+            { text: name, size: 0.76, color: '#666666' },
+          ],
+        };
+      },
+    };
+  }
 
   // 投稿画像を設定する。source はサムネイルか、利用者が用意したスクショ（custom）
   // 戻り値: true=設定できた / false=失敗 / null=新しい描画に追い越されたので破棄
@@ -742,7 +923,7 @@
     let t = null;
     if (source) {
       try {
-        const caption = setting.show ? target.service.caption(target.info) : null;
+        const caption = setting.show ? target.service.caption(target.info, textEl.value) : null;
         t = await composeImage(source, caption, setting.size / 100);
       } catch { /* 下で「取得できませんでした」表示 */ }
     }
@@ -772,8 +953,11 @@
       thumbEl.hidden = true;
       saveImageEl.hidden = true;
       copyImageBtn.disabled = true;
-      thumbMetaEl.textContent = custom ? '画像を読み込めませんでした。' : 'サムネイル画像を取得できませんでした。';
+      thumbMetaEl.textContent = custom ? '画像を読み込めませんでした。'
+        : target.service.manual ? '画像なし（「スクショを追加」から画像を付けられます）'
+        : '画像を取得できませんでした。';
     }
+    pickImageBtn.textContent = target.options.length ? 'スクショに差し替える' : 'スクショを追加';
     revertBtn.hidden = !(custom && t);
     cropBtn.hidden = !(custom && t && target.customMaster);
     updateChoiceUi();
@@ -855,7 +1039,7 @@
 
   async function useCustomImage(blob) {
     if (!current || resultEl.hidden) {
-      setStatus('先に YouTube か TVer の URL を貼り付けてください。そのあとでスクショを設定できます。', 'err');
+      setStatus('先に共有したい URL（YouTube・TVer・Spotify・Netflix・U-NEXT）を貼り付けてください。そのあとでスクショを設定できます。', 'err');
       return;
     }
     const target = current;
@@ -1072,7 +1256,7 @@
   });
   window.addEventListener('resize', layoutCropStage);
 
-  // --- 画像の下の帯の設定（YouTube と TVer で別々に保存する） -------------
+  // --- 画像の下の帯の設定（サービスごとに別々に保存する） -----------------
   const CAPTION_KEY = 'yt-x-share.caption';
   const captionSettings = {};
   for (const key of Object.keys(SERVICES)) captionSettings[key] = { show: true, size: 100 };
@@ -1109,7 +1293,8 @@
     const setting = captionSettings[serviceKey];
     captionShowEl.checked = setting.show;
     captionSizeEl.value = String(setting.size);
-    captionShowLabelEl.textContent = '画像の下に' + SERVICES[serviceKey].captionLabel + 'を入れる';
+    const service = SERVICES[serviceKey];
+    captionShowLabelEl.textContent = service.captionToggleLabel || '画像の下に' + service.captionLabel + 'を入れる';
     updateCaptionControls();
   }
 
@@ -1149,7 +1334,7 @@
       lastKey = '';
       closeCropper();
       resultEl.hidden = true;
-      if (String(raw).trim()) setStatus('YouTube か TVer の動画 URL として読み取れませんでした。', 'err');
+      if (String(raw).trim()) setStatus('対応している URL（YouTube・TVer・Spotify・Netflix・U-NEXT）として読み取れませんでした。', 'err');
       else setStatus('');
       return;
     }
@@ -1158,7 +1343,7 @@
     lastKey = parsed.shareUrl;
 
     const seq = ++requestSeq;
-    setStatus('タイトルとサムネイルを取得中…');
+    setStatus('タイトルと画像を取得中…');
     closeCropper();
     current = null;
     pngBlob = null;
@@ -1168,15 +1353,16 @@
 
     const [infoResult, thumbCanvasResult] = await Promise.allSettled([
       service.fetchInfo(parsed),
-      service.fetchThumb(parsed),
+      service.fetchThumb ? service.fetchThumb(parsed) : Promise.reject(new Error('no thumbnail')),
     ]);
     if (seq !== requestSeq) return; // 新しい貼り付けが来ていたら破棄
 
     const info = infoResult.status === 'fulfilled' ? infoResult.value : {};
     const title = service.hasInfo(info);
-    if (!title && thumbCanvasResult.status !== 'fulfilled') {
+    // 情報を自動で取れないサービス（manual）は、取れなくても先へ進む
+    if (!title && thumbCanvasResult.status !== 'fulfilled' && !service.manual) {
       lastKey = '';
-      setStatus('動画が見つかりませんでした。URL を確認してください（ネットワーク未接続の場合も表示されます）。', 'err');
+      setStatus('URL の内容が見つかりませんでした。URL を確認してください（ネットワーク未接続の場合も表示されます）。', 'err');
       return;
     }
 
@@ -1185,7 +1371,7 @@
       info,
       service,
       // 選べる画像の一覧。先頭は公式サムネイル
-      options: thumbCanvasResult.status === 'fulfilled' ? [{ label: 'サムネイル', canvas: thumbCanvasResult.value }] : [],
+      options: thumbCanvasResult.status === 'fulfilled' ? [{ label: service.thumbLabel || 'サムネイル', canvas: thumbCanvasResult.value }] : [],
       selected: 0,
     };
     const target = current;
@@ -1198,7 +1384,16 @@
     resultEl.hidden = false;
     loadAlternates(target); // 途中の場面は後から追加する（待たずに先へ進む）
 
-    if (!title) {
+    if (service.manual) {
+      // 想定どおりの動きなので、エラー表示（赤）にはしない
+      if (title) {
+        setStatus('共有テキストから作品名を入れました。' + service.name + ' の画像は自動で取得できないため、「スクショを追加」から付けてください。');
+      } else {
+        setStatus(service.name + ' は作品名と画像を自動で取得できません。1 行目に作品名を入力し、「スクショを追加」から画像を付けてください。');
+        textEl.focus();
+        textEl.setSelectionRange(0, 0);
+      }
+    } else if (!title) {
       setStatus(service.missing, 'err');
       textEl.focus();
       textEl.setSelectionRange(0, 0);
@@ -1271,7 +1466,16 @@
     }
   });
 
-  textEl.addEventListener('input', updateCount);
+  textEl.addEventListener('input', () => {
+    updateCount();
+    // 1 行目を画像の下に入れるサービスでは、入力に合わせて画像を描き直す（打っている間は待つ）
+    if (current && current.service.captionFromText && current.source && captionSettings[current.parsed.service].show) {
+      clearTimeout(captionTimer);
+      captionTimer = setTimeout(() => {
+        if (current && !resultEl.hidden && current.source) renderImage(current.source, current.custom);
+      }, 400);
+    }
+  });
 
   // ページのどこに貼り付けても反応する（投稿テキストの編集中は除く）
   document.addEventListener('paste', (e) => {
@@ -1302,7 +1506,7 @@
     if (!current) return;
     const chosen = current.options[current.selected];
     await renderImage(chosen ? chosen.canvas : null, false);
-    setStatus('スクショをやめて、元の画像に戻しました。', 'ok');
+    setStatus(chosen ? 'スクショをやめて、元の画像に戻しました。' : 'スクショをやめました。', 'ok');
   });
   if (isMobile) imageHintEl.hidden = true;
 
@@ -1332,7 +1536,13 @@
     debounce = setTimeout(() => generate(urlInput.value), 350);
   });
   urlInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { clearTimeout(debounce); lastKey = ''; generate(urlInput.value); }
+    if (e.key === 'Enter') {
+      // 生成後に投稿テキストへ移ったとき、この Enter で改行が入らないようにする
+      e.preventDefault();
+      clearTimeout(debounce);
+      lastKey = '';
+      generate(urlInput.value);
+    }
   });
 
   // スマホ向け：ボタンでクリップボードから貼り付け
@@ -1351,7 +1561,7 @@
       }
     });
   }
-  if (isMobile) urlInput.placeholder = 'YouTube / TVer の URL を貼り付け';
+  if (isMobile) urlInput.placeholder = 'URL を貼り付け';
 
   // YouTube アプリの「共有」からこのアプリが選ばれたとき（?text= / ?url= で届く）
   const params = new URLSearchParams(location.search);
@@ -1367,7 +1577,7 @@
       // 原因を調べられるよう、受け取った内容をそのまま見せる
       const received = sharedValues.join(' ／ ');
       urlInput.value = received.slice(0, 500);
-      setStatus('共有された内容から YouTube か TVer の動画 URL を読み取れませんでした。受け取った内容：' +
+      setStatus('共有された内容から対応している URL（YouTube・TVer・Spotify・Netflix・U-NEXT）を読み取れませんでした。受け取った内容：' +
         received.slice(0, 300), 'err');
     }
   } else if (sharedKeys.some((k) => params.has(k))) {
