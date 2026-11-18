@@ -569,10 +569,12 @@
   }
 
   // --- Spotify のタイトル・画像取得（Spotify 公式 oEmbed） ----------------
-  // タイトルと画像の両方で使うので、1 回だけ取りに行く
+  // タイトルと画像の両方で使うので、1 回だけ取りに行く。
+  // ブラウザの言語設定が英語などでも、日本語の表記（例：リック・アストリー）がある名前は日本語で受け取る
   function fetchSpotifyOembed(p) {
     if (!p.oembed) {
-      p.oembed = fetch('https://open.spotify.com/oembed?url=' + encodeURIComponent(p.shareUrl)).then((res) => {
+      const url = 'https://open.spotify.com/oembed?url=' + encodeURIComponent(p.shareUrl);
+      p.oembed = fetch(url, { headers: { 'Accept-Language': 'ja' } }).then((res) => {
         if (!res.ok) throw new Error('Spotify oEmbed HTTP ' + res.status);
         return res.json();
       });
@@ -584,12 +586,22 @@
     const data = await fetchSpotifyOembed(p);
     // 短縮リンクのときは、埋め込み用 URL から種類と正式な URL を調べる
     const real = parseSpotifyUrl(String(data.iframe_url || ''));
+    const type = p.type || (real ? real.type : '');
     return {
-      title: String(data.title || '').trim(),
-      type: p.type || (real ? real.type : ''),
+      ok: true,
+      // ポッドキャスト番組の oEmbed は番組名ではなく最新回のタイトルを返すので使わない
+      title: type === 'show' ? '' : String(data.title || '').trim(),
+      type,
       url: !p.type && real ? real.shareUrl : '',
     };
   }
+
+  // 1 行目に入れる作り手の名前（アーティスト名・番組名など）。oEmbed に含まれないので入力してもらう
+  const SPOTIFY_CREATOR = {
+    track: 'アーティスト名', album: 'アーティスト名', episode: '番組名', audiobook: '著者名', chapter: 'オーディオブック名',
+  };
+  // 種類がわからない短縮リンクは、いちばん多い曲として扱う
+  const spotifyHasCreator = (type) => !type || !!SPOTIFY_CREATOR[type];
 
   // oEmbed の画像は 300px 前後なので、同じ画像の 640px 版を先に試す
   const SPOTIFY_LARGER = [
@@ -866,18 +878,40 @@
       fetchInfo: fetchSpotifyInfo,
       fetchThumb: fetchSpotifyThumbnail,
       thumbLabel: 'カバー画像',
-      hasInfo: (info) => !!info.title,
-      lines: (info, p) => [info.title || '', '#Spotify', info.url || p.shareUrl],
-      captionLabel: 'タイトル',
-      // 画像の下に、タイトル（太字）と、その下に「Spotify・曲」などの種類（小さめ）を入れる
-      caption: (info) => (info.title ? {
-        baseScale: 0.576,
-        rows: [
-          { text: info.title, size: 1.1, bold: true, color: '#111111', maxLines: 2 },
-          { text: 'Spotify' + (SPOTIFY_TYPES[info.type] ? '・' + SPOTIFY_TYPES[info.type] : ''), size: 0.76, color: '#666666' },
-        ],
-      } : null),
-      missing: 'タイトルを取得できませんでした（非公開のプレイリストなど）。1 行目に手入力してください。',
+      hasInfo: (info) => !!info.ok,
+      // 曲・アルバム・エピソード：アーティスト名（番組名）/ タイトル / URL / #Spotify
+      // アーティスト・番組・プレイリスト：名前 / URL / #Spotify
+      lines: (info, p) => {
+        const url = info.url || p.shareUrl;
+        return spotifyHasCreator(info.type) ? ['', info.title || '', url, '#Spotify'] : [info.title || '', url, '#Spotify'];
+      },
+      // 自動で取れず、1 行目に入力してほしいもの
+      prompt: (info) => {
+        const need = spotifyHasCreator(info.type) ? SPOTIFY_CREATOR[info.type] || 'アーティスト名'
+          : !info.title ? (info.type === 'show' ? '番組名' : 'タイトル') : '';
+        return need ? need + 'は自動で取得できないため、1 行目に入力してください。' : '';
+      },
+      captionLabel: 'タイトル・アーティスト名',
+      captionFromText: true,
+      // 画像の下に、タイトル（太字）と、その下にアーティスト名など（小さめ）を入れる。
+      // どちらも投稿テキストから取るので、入力・修正した内容が画像にも反映される。
+      // アーティスト名が空のときは「Spotify・曲」などの種類を入れる
+      caption: (info, text) => {
+        const lines = String(text || '').split('\n').map((s) => s.trim());
+        const plain = (s) => (s && !s.startsWith('#') && !/^https?:\/\//i.test(s) ? s : '');
+        const withCreator = spotifyHasCreator(info.type);
+        const title = plain(withCreator ? lines[1] : lines[0]) || info.title;
+        const creator = withCreator ? plain(lines[0]) : '';
+        if (!title) return null;
+        return {
+          baseScale: 0.576,
+          rows: [
+            { text: title, size: 1.1, bold: true, color: '#111111', maxLines: 2 },
+            { text: creator || 'Spotify' + (SPOTIFY_TYPES[info.type] ? '・' + SPOTIFY_TYPES[info.type] : ''), size: 0.76, color: '#666666' },
+          ],
+        };
+      },
+      missing: 'タイトルを取得できませんでした（非公開のプレイリストなど）。手入力してください。',
     },
     // Netflix と U-NEXT は、他のサイトから作品情報や画像を読み取れない（CORS で拒否される）。
     // 作品名は共有テキストのかぎかっこ内か手入力、画像はスクショで用意してもらう
@@ -1377,10 +1411,11 @@
     const target = current;
     syncCaptionControls(parsed.service);
     buildChoices(target);
-    await renderImage(target.options.length ? target.options[0].canvas : null, false);
-    if (seq !== requestSeq) return;
+    // 画像の下の文字を投稿テキストから作るサービスがあるので、テキストを先に入れてから描く
     textEl.value = service.lines(info, parsed).join('\n');
     updateCount();
+    await renderImage(target.options.length ? target.options[0].canvas : null, false);
+    if (seq !== requestSeq) return;
     resultEl.hidden = false;
     loadAlternates(target); // 途中の場面は後から追加する（待たずに先へ進む）
 
@@ -1395,6 +1430,11 @@
       }
     } else if (!title) {
       setStatus(service.missing, 'err');
+      textEl.focus();
+      textEl.setSelectionRange(0, 0);
+    } else if (service.prompt && service.prompt(info)) {
+      // 一部だけ自動で取れないもの（Spotify のアーティスト名など）。想定どおりなので赤にはしない
+      setStatus('生成しました。' + service.prompt(info));
       textEl.focus();
       textEl.setSelectionRange(0, 0);
     } else if (!pngBlob) {
