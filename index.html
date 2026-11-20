@@ -527,13 +527,16 @@
       // アプリの共有で付く短縮リンク（https://abema.app/…）。転送先は読み取れないので、そのまま使う
       if (hostIs(u, 'abema.app')) {
         const code = u.pathname.split('/').filter(Boolean)[0] || '';
-        if (/^[A-Za-z0-9]+$/.test(code)) return { id: code, shareUrl: 'https://abema.app/' + code, sharedTitle };
+        if (/^[A-Za-z0-9]+$/.test(code)) return { id: code, kind: '', shareUrl: 'https://abema.app/' + code, sharedTitle };
         continue;
       }
       if (!hostIs(u, 'abema.tv')) continue;
       const path = u.pathname.replace(/\/+$/, '');
+      // 個別の回（episode）と作品ページ（title）は、ID から画像の場所がわかる
+      const video = path.match(/^\/video\/(episode|title)\/([A-Za-z0-9_-]+)$/);
+      if (video) return { id: video[2], kind: video[1], shareUrl: 'https://abema.tv' + path, sharedTitle };
       const last = path.split('/').pop();
-      if (last) return { id: last.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'abema', shareUrl: 'https://abema.tv' + path, sharedTitle };
+      if (last) return { id: last.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'abema', kind: '', shareUrl: 'https://abema.tv' + path, sharedTitle };
     }
     return null;
   }
@@ -650,6 +653,51 @@
       }
     }
     throw new Error('thumbnail unavailable');
+  }
+
+  // --- ABEMA の画像取得（画像の中継サービス wsrv.nl 経由） -----------------
+  // ABEMA の画像サーバーは他のサイトからの読み取りを許可していない（CORS ヘッダーがない）ので、
+  // 読み取りを許可して返してくれる wsrv.nl を通す。画像の場所は URL の ID から決まり、
+  // 大きさの指定（?width=…）を付けなければ元の大きさ（横長は 1920×1080）で受け取れる
+  const ABEMA_IMAGE = 'https://image.p-c2-x.abema-tv.com/image/';
+  const loadAbemaImage = (path) => loadCanvas('https://wsrv.nl/?url=' + encodeURIComponent(ABEMA_IMAGE + path));
+  // 個別の回の画像は thumb001〜thumb006（回によって枚数が違う）
+  const abemaThumbPath = (id, n) => 'programs/' + id + '/thumb00' + n + '.png';
+
+  // ページでタイトルと一緒に表示されている画像。個別の回は thumb002 で、1 枚しかない回は thumb001。
+  // 作品ページは作品画像
+  async function fetchAbemaThumbnail(p) {
+    if (p.kind === 'title') return loadAbemaImage('series/' + p.id + '/thumb.png');
+    if (p.kind !== 'episode') throw new Error('no thumbnail');
+    try {
+      p.abemaMain = 2;
+      return await loadAbemaImage(abemaThumbPath(p.id, 2));
+    } catch {
+      p.abemaMain = 1;
+      return loadAbemaImage(abemaThumbPath(p.id, 1));
+    }
+  }
+
+  // ほかに選べる画像（その回の場面・シーズン画像・作品画像・縦長ポスター）。ない画像は読み込みに失敗して外れる
+  function abemaAlternates(p) {
+    const specs = [];
+    const add = (label, path) => specs.push({ label, load: () => loadAbemaImage(path) });
+    let series = '';
+    if (p.kind === 'episode') {
+      // タイトルの横の画像は除く。thumb001 だった回は thumb002 がないとわかっているので、それも除く
+      let scene = 0;
+      for (let n = 1; n <= 6; n++) {
+        if (n !== p.abemaMain && !(p.abemaMain === 1 && n === 2)) add('場面 ' + ++scene, abemaThumbPath(p.id, n));
+      }
+      const season = p.id.match(/^(.+_s\d+)_p\d+$/); // 194-25_s2_p1 → 194-25_s2
+      if (season) add('シーズン画像', 'seasons/' + season[1] + '/default_thumb.png');
+      series = (p.id.match(/^(\d+-\d+)_/) || [])[1] || ''; // 194-25_s2_p1 → 194-25
+      if (series) add('作品画像', 'series/' + series + '/thumb.png');
+    } else if (p.kind === 'title') {
+      series = p.id;
+    }
+    if (series) add('縦長ポスター', 'series/' + series + '/portrait.png');
+    return specs;
   }
 
   // --- サムネイル取得 ---------------------------------------------------
@@ -934,15 +982,17 @@
       },
       missing: 'タイトルを取得できませんでした（非公開のプレイリストなど）。手入力してください。',
     },
-    // Netflix・U-NEXT・ABEMA は、他のサイトから作品情報や画像を読み取れない（CORS で拒否される）。
-    // 作品名は共有テキストのかぎかっこ内か手入力、画像はスクショで用意してもらう
+    // Netflix・U-NEXT・ABEMA は、他のサイトから作品情報を読み取れない（CORS で拒否される）。
+    // 作品名は共有テキストのかぎかっこ内か手入力、画像はスクショで用意してもらう。
+    // ABEMA の個別の回と作品ページだけは、画像の場所が URL からわかるので中継サービス経由で取る
     netflix: manualService('Netflix', '#Netflix'),
     unext: manualService('U-NEXT', '#UNEXT'),
-    abema: manualService('ABEMA', '#ABEMA'),
+    abema: manualService('ABEMA', '#ABEMA', { fetchThumb: fetchAbemaThumbnail, alternates: abemaAlternates }),
   };
 
-  function manualService(name, tag) {
+  function manualService(name, tag, extra = {}) {
     return {
+      ...extra,
       manual: true,
       name,
       fetchInfo: (p) => ({ title: p.sharedTitle || '' }),
@@ -1443,10 +1493,15 @@
 
     if (service.manual) {
       // 想定どおりの動きなので、エラー表示（赤）にはしない
+      // 画像を取りに行くサービス（ABEMA）で取れなかったのは、画像の場所がわからない URL か通信の失敗
+      const noImage = service.fetchThumb ? 'この URL では画像を取得できなかったため、' : service.name + ' の画像は自動で取得できないため、';
       if (title) {
-        setStatus('共有テキストから作品名を入れました。' + service.name + ' の画像は自動で取得できないため、「スクショを追加」から付けてください。');
+        if (pngBlob) setStatus('生成しました。共有テキストから作品名を入れました。', 'ok');
+        else setStatus('共有テキストから作品名を入れました。' + noImage + '「スクショを追加」から付けてください。');
       } else {
-        setStatus(service.name + ' は作品名と画像を自動で取得できません。1 行目に作品名を入力し、「スクショを追加」から画像を付けてください。');
+        setStatus(pngBlob ? service.name + ' の作品名は自動で取得できないため、1 行目に入力してください。'
+          : service.fetchThumb ? service.name + ' の作品名は自動で取得できません。1 行目に作品名を入力してください。' + noImage + '「スクショを追加」から画像を付けてください。'
+          : service.name + ' は作品名と画像を自動で取得できません。1 行目に作品名を入力し、「スクショを追加」から画像を付けてください。');
         textEl.focus();
         textEl.setSelectionRange(0, 0);
       }
