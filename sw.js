@@ -26,7 +26,12 @@ self.addEventListener('fetch', (event) => {
   const isPage = request.mode === 'navigate';
   event.respondWith((async () => {
     try {
-      const response = await fetch(request);
+      // GitHub Pages は 10 分間ブラウザに保存させる設定（max-age=600）なので、普通に取ると
+      // 更新直後でも古い版が返ることがある。毎回サーバーに更新の有無を確かめる（変わっていなければ 304 で軽い）。
+      // ページを開く要求（navigate）には設定を足せないので URL から取り直し、転送はブラウザに任せる
+      const response = isPage
+        ? await fetch(request.url, { cache: 'no-cache', redirect: 'manual' })
+        : await fetch(request, { cache: 'no-cache' });
       if (response.ok) {
         const cache = await caches.open(CACHE);
         // 共有で付く ?text=... などに関係なく、ページ本体は 1 つだけ保存する
