@@ -270,7 +270,7 @@
 <body>
 <main>
   <h1>YouTube → X シェア</h1>
-  <p class="lead">YouTube・TVer・Spotify・Netflix・U-NEXT の URL をこのページに貼り付けるだけで、X 用の投稿内容を作ります。</p>
+  <p class="lead">YouTube・TVer・Spotify・Netflix・U-NEXT・ABEMA の URL をこのページに貼り付けるだけで、X 用の投稿内容を作ります。</p>
 
   <div class="url-row">
     <input id="url" class="url-input" type="url" inputmode="url" autocomplete="off" spellcheck="false"
@@ -519,6 +519,25 @@
     return null;
   }
 
+  // ABEMA のビデオ（/video/episode/…・/video/title/…）、番組表の番組（/channels/…/slots/…）、
+  // 放送中のチャンネル（/now-on-air/…）など。共有で付く ?utm_… や # 以降は落とす
+  function parseAbemaUrl(raw) {
+    for (const u of findUrls(raw)) {
+      const sharedTitle = titleFromSharedText(raw);
+      // アプリの共有で付く短縮リンク（https://abema.app/…）。転送先は読み取れないので、そのまま使う
+      if (hostIs(u, 'abema.app')) {
+        const code = u.pathname.split('/').filter(Boolean)[0] || '';
+        if (/^[A-Za-z0-9]+$/.test(code)) return { id: code, shareUrl: 'https://abema.app/' + code, sharedTitle };
+        continue;
+      }
+      if (!hostIs(u, 'abema.tv')) continue;
+      const path = u.pathname.replace(/\/+$/, '');
+      const last = path.split('/').pop();
+      if (last) return { id: last.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'abema', shareUrl: 'https://abema.tv' + path, sharedTitle };
+    }
+    return null;
+  }
+
   function parseUrl(raw) {
     const youtube = parseYouTubeUrl(raw);
     if (youtube) return { service: 'youtube', ...youtube };
@@ -530,6 +549,8 @@
     if (netflix) return { service: 'netflix', ...netflix };
     const unext = parseUnextUrl(raw);
     if (unext) return { service: 'unext', ...unext };
+    const abema = parseAbemaUrl(raw);
+    if (abema) return { service: 'abema', ...abema };
     return null;
   }
 
@@ -913,10 +934,11 @@
       },
       missing: 'タイトルを取得できませんでした（非公開のプレイリストなど）。手入力してください。',
     },
-    // Netflix と U-NEXT は、他のサイトから作品情報や画像を読み取れない（CORS で拒否される）。
+    // Netflix・U-NEXT・ABEMA は、他のサイトから作品情報や画像を読み取れない（CORS で拒否される）。
     // 作品名は共有テキストのかぎかっこ内か手入力、画像はスクショで用意してもらう
     netflix: manualService('Netflix', '#Netflix'),
     unext: manualService('U-NEXT', '#UNEXT'),
+    abema: manualService('ABEMA', '#ABEMA'),
   };
 
   function manualService(name, tag) {
@@ -1073,7 +1095,7 @@
 
   async function useCustomImage(blob) {
     if (!current || resultEl.hidden) {
-      setStatus('先に共有したい URL（YouTube・TVer・Spotify・Netflix・U-NEXT）を貼り付けてください。そのあとでスクショを設定できます。', 'err');
+      setStatus('先に共有したい URL（YouTube・TVer・Spotify・Netflix・U-NEXT・ABEMA）を貼り付けてください。そのあとでスクショを設定できます。', 'err');
       return;
     }
     const target = current;
@@ -1368,7 +1390,7 @@
       lastKey = '';
       closeCropper();
       resultEl.hidden = true;
-      if (String(raw).trim()) setStatus('対応している URL（YouTube・TVer・Spotify・Netflix・U-NEXT）として読み取れませんでした。', 'err');
+      if (String(raw).trim()) setStatus('対応している URL（YouTube・TVer・Spotify・Netflix・U-NEXT・ABEMA）として読み取れませんでした。', 'err');
       else setStatus('');
       return;
     }
@@ -1617,7 +1639,7 @@
       // 原因を調べられるよう、受け取った内容をそのまま見せる
       const received = sharedValues.join(' ／ ');
       urlInput.value = received.slice(0, 500);
-      setStatus('共有された内容から対応している URL（YouTube・TVer・Spotify・Netflix・U-NEXT）を読み取れませんでした。受け取った内容：' +
+      setStatus('共有された内容から対応している URL（YouTube・TVer・Spotify・Netflix・U-NEXT・ABEMA）を読み取れませんでした。受け取った内容：' +
         received.slice(0, 300), 'err');
     }
   } else if (sharedKeys.some((k) => params.has(k))) {

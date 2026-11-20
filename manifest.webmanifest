@@ -1,7 +1,7 @@
 {
   "name": "YouTube → X シェア",
   "short_name": "YT→X シェア",
-  "description": "YouTube・TVer・Spotify・Netflix・U-NEXT の URL から、タイトル・URL・画像つきの X 投稿を作ります。",
+  "description": "YouTube・TVer・Spotify・Netflix・U-NEXT・ABEMA の URL から、タイトル・URL・画像つきの X 投稿を作ります。",
   "lang": "ja",
   "start_url": "./",
   "scope": "./",
