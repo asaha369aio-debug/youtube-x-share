@@ -890,6 +890,13 @@
     return n;
   }
 
+  // 投稿テキストの n 行目（0 始まり）の先頭にカーソルを置く
+  function focusLine(n) {
+    const pos = textEl.value.split('\n').slice(0, n).reduce((sum, line) => sum + line.length + 1, 0);
+    textEl.focus();
+    textEl.setSelectionRange(pos, pos);
+  }
+
   function updateCount() {
     const n = xWeightedLength(textEl.value);
     countEl.textContent = n + ' / ' + X_LIMIT;
@@ -983,16 +990,51 @@
       missing: 'タイトルを取得できませんでした（非公開のプレイリストなど）。手入力してください。',
     },
     // Netflix・U-NEXT・ABEMA は、他のサイトから作品情報を読み取れない（CORS で拒否される）。
-    // 作品名は共有テキストのかぎかっこ内か手入力、画像はスクショで用意してもらう。
-    // ABEMA の個別の回と作品ページだけは、画像の場所が URL からわかるので中継サービス経由で取る
+    // 作品名は共有テキストのかぎかっこ内か手入力、画像はスクショで用意してもらう
     netflix: manualService('Netflix', '#Netflix'),
     unext: manualService('U-NEXT', '#UNEXT'),
-    abema: manualService('ABEMA', '#ABEMA', { fetchThumb: fetchAbemaThumbnail, alternates: abemaAlternates }),
+    // ABEMA の個別の回と作品ページは、画像の場所が URL からわかるので中継サービス経由で取る
+    abema: manualService('ABEMA', '#ABEMA', {
+      fetchThumb: fetchAbemaThumbnail,
+      alternates: abemaAlternates,
+      // 番組タイトル / 動画タイトル / #ABEMA / URL（作品ページの URL は動画タイトルの行なし）。
+      // 共有テキストのかぎかっこ内は番組タイトルとして入れる
+      lines: (info, p) => [info.title || '', ...(p.kind === 'title' ? [] : ['']), '#ABEMA', p.shareUrl],
+      captionLabel: '番組タイトル・動画タイトル',
+      captionToggleLabel: '画像の下に番組タイトル・動画タイトル（投稿テキストの 1・2 行目）を入れる',
+      // ハッシュタグと URL より上の 2 行を、TVer と同じ並びで画像の下に入れる：
+      // 番組タイトル（太字）/ 動画タイトル（大きめの太字）/ ABEMA
+      caption: (info, text) => {
+        const lines = String(text || '').split('\n').map((s) => s.trim());
+        const end = lines.findIndex((s) => s.startsWith('#') || /^https?:\/\//i.test(s));
+        const [series = '', episode = ''] = end < 0 ? lines : lines.slice(0, end);
+        if (!series && !episode) return null;
+        return {
+          baseScale: 0.8,
+          rows: [
+            { text: series, size: 0.78, bold: true, color: '#111111', maxLines: 2 },
+            { text: episode, size: 1, bold: true, color: '#111111', maxLines: 2 },
+            { text: 'ABEMA', size: 0.74, color: '#666666', gapBefore: 0.1 },
+          ],
+        };
+      },
+      status: (info, p, gotImage) => {
+        const need = p.kind === 'title' ? (info.title ? '' : '番組タイトルを 1 行目に')
+          : info.title ? '動画タイトルを 2 行目に' : '番組タイトルと動画タイトルを 1・2 行目に';
+        const text = (info.title ? '共有テキストから番組タイトルを入れました。' : '') +
+          (need ? need + '入力してください（自動では取得できません）。' : '') +
+          (gotImage ? '' : 'この URL では画像を取得できなかったため、「スクショを追加」から付けてください。');
+        return {
+          text: text || '生成しました。',
+          ok: gotImage && !need,
+          line: !need ? null : info.title ? 1 : 0,
+        };
+      },
+    }),
   };
 
   function manualService(name, tag, extra = {}) {
     return {
-      ...extra,
       manual: true,
       name,
       fetchInfo: (p) => ({ title: p.sharedTitle || '' }),
@@ -1013,6 +1055,11 @@
           ],
         };
       },
+      // 生成後の案内。想定どおりの動きなので赤にはしない。line は入力欄のカーソルを置く行（null は置かない）
+      status: (info) => (info.title
+        ? { text: '共有テキストから作品名を入れました。' + name + ' の画像は自動で取得できないため、「スクショを追加」から付けてください。', line: null }
+        : { text: name + ' は作品名と画像を自動で取得できません。1 行目に作品名を入力し、「スクショを追加」から画像を付けてください。', line: 0 }),
+      ...extra,
     };
   }
 
@@ -1492,19 +1539,10 @@
     loadAlternates(target); // 途中の場面は後から追加する（待たずに先へ進む）
 
     if (service.manual) {
-      // 想定どおりの動きなので、エラー表示（赤）にはしない
-      // 画像を取りに行くサービス（ABEMA）で取れなかったのは、画像の場所がわからない URL か通信の失敗
-      const noImage = service.fetchThumb ? 'この URL では画像を取得できなかったため、' : service.name + ' の画像は自動で取得できないため、';
-      if (title) {
-        if (pngBlob) setStatus('生成しました。共有テキストから作品名を入れました。', 'ok');
-        else setStatus('共有テキストから作品名を入れました。' + noImage + '「スクショを追加」から付けてください。');
-      } else {
-        setStatus(pngBlob ? service.name + ' の作品名は自動で取得できないため、1 行目に入力してください。'
-          : service.fetchThumb ? service.name + ' の作品名は自動で取得できません。1 行目に作品名を入力してください。' + noImage + '「スクショを追加」から画像を付けてください。'
-          : service.name + ' は作品名と画像を自動で取得できません。1 行目に作品名を入力し、「スクショを追加」から画像を付けてください。');
-        textEl.focus();
-        textEl.setSelectionRange(0, 0);
-      }
+      // 作品名などを自動で取れないサービス。入力してほしい行にカーソルを置く
+      const s = service.status(info, parsed, !!pngBlob);
+      setStatus(s.text, s.ok ? 'ok' : '');
+      if (s.line != null) focusLine(s.line);
     } else if (!title) {
       setStatus(service.missing, 'err');
       textEl.focus();
