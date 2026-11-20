@@ -265,6 +265,23 @@
     border-radius: 5px;
     background: var(--bg);
   }
+
+  /* ABEMA 用ブックマークレットの登録欄 */
+  .extra {
+    margin-top: 24px;
+    padding: 12px 16px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    font-size: 14px;
+  }
+  .extra summary { cursor: pointer; font-weight: 600; }
+  .extra p, .extra ol { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+  .extra ol { padding-left: 1.4em; }
+  .extra li + li { margin-top: 6px; }
+  .extra b { color: var(--text); }
+  .bm-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+  .bm-row .bm-link { background: var(--accent); color: var(--accent-text); border-color: var(--accent); cursor: grab; }
 </style>
 </head>
 <body>
@@ -336,6 +353,20 @@
     <p id="hintDesktop" class="hint">X の投稿画面が開いたら、入力欄で <kbd>Ctrl</kbd>+<kbd>V</kbd> を押すと画像が添付されます。</p>
     <p id="hintMobile" class="hint" hidden>共有メニューで X を選ぶと、テキストと画像が入った状態で投稿画面が開きます。テキストはクリップボードにもコピーされます。</p>
   </section>
+
+  <details class="extra">
+    <summary>ABEMA の番組タイトル・動画タイトルも自動で入れる（ブックマークレット）</summary>
+    <p>このページからは ABEMA のページを読めないため、ABEMA の動画ページを開いた状態でブックマークを押すと、そのページからタイトルを読み取ってここへ送ります。無料で、アカウント登録も要りません。ABEMA アプリの中では使えないので、ブラウザで開いてください。</p>
+    <div class="bm-row">
+      <a id="bookmarklet" class="btn bm-link" href="#">X共有</a>
+      <button id="copyBookmarklet" type="button">コードをコピー</button>
+    </div>
+    <ol>
+      <li><b>PC：</b>上の「X共有」をブックマークバーへドラッグします。ABEMA の動画ページで、そのブックマークを押します。</li>
+      <li><b>iPhone（Safari）：</b>このページをブックマークに追加し、「コードをコピー」を押します。ブックマークを編集して、名前を「X共有」、アドレスをコピーしたコードに置き換えます。ABEMA の動画ページで、ブックマーク一覧から「X共有」を押します。</li>
+      <li><b>Android（Chrome）：</b>このページをブックマークに追加し、「コードをコピー」を押します。ブックマークを編集して、名前を「X共有」、URL をコピーしたコードに置き換えます。ABEMA の動画ページで、アドレスバーに「X共有」と入力し、候補に出たブックマークを押します（一覧から押しても動きません）。</li>
+    </ol>
+  </details>
 </main>
 
 <script>
@@ -667,6 +698,8 @@
   // ページでタイトルと一緒に表示されている画像。個別の回は thumb002 で、1 枚しかない回は thumb001。
   // 作品ページは作品画像
   async function fetchAbemaThumbnail(p) {
+    // 番組表の番組など、URL から画像の場所がわからないページは、ブックマークレットで受け取った画像を使う
+    if (!p.kind && p.pageImage) return loadAbemaImage(p.pageImage);
     if (p.kind === 'title') return loadAbemaImage('series/' + p.id + '/thumb.png');
     if (p.kind !== 'episode') throw new Error('no thumbnail');
     try {
@@ -993,13 +1026,24 @@
     // 作品名は共有テキストのかぎかっこ内か手入力、画像はスクショで用意してもらう
     netflix: manualService('Netflix', '#Netflix'),
     unext: manualService('U-NEXT', '#UNEXT'),
-    // ABEMA の個別の回と作品ページは、画像の場所が URL からわかるので中継サービス経由で取る
-    abema: manualService('ABEMA', '#ABEMA', {
+    // ABEMA の個別の回と作品ページは、画像の場所が URL からわかるので中継サービス経由で取る。
+    // タイトルは、ブックマークレットで ABEMA のページから受け取ったとき（fromPage）だけ自動で入る
+    abema: manualService('ABEMA', '#Abema', {
+      fetchInfo: (p) => ({
+        page: !!p.fromPage,
+        // URL を貼っただけのときは、共有テキストのかぎかっこ内を番組タイトルとして入れる
+        series: p.pageSeries || p.sharedTitle || '',
+        episode: p.pageEpisode || '',
+      }),
+      hasInfo: (info) => !!info.series,
       fetchThumb: fetchAbemaThumbnail,
       alternates: abemaAlternates,
-      // 番組タイトル / 動画タイトル / #ABEMA / URL（作品ページの URL は動画タイトルの行なし）。
-      // 共有テキストのかぎかっこ内は番組タイトルとして入れる
-      lines: (info, p) => [info.title || '', ...(p.kind === 'title' ? [] : ['']), '#ABEMA', p.shareUrl],
+      // 番組タイトル / 動画タイトル / #Abema / URL。動画タイトルの行は、ページから受け取ったときは
+      // 動画タイトルがある場合だけ、手入力のときは作品ページの URL 以外で入れる
+      lines: (info, p) => {
+        const withEpisode = info.page ? !!info.episode : p.kind !== 'title';
+        return [info.series, ...(withEpisode ? [info.episode] : []), '#Abema', p.shareUrl];
+      },
       captionLabel: '番組タイトル・動画タイトル',
       captionToggleLabel: '画像の下に番組タイトル・動画タイトル（投稿テキストの 1・2 行目）を入れる',
       // ハッシュタグと URL より上の 2 行を、TVer と同じ並びで画像の下に入れる：
@@ -1019,15 +1063,18 @@
         };
       },
       status: (info, p, gotImage) => {
-        const need = p.kind === 'title' ? (info.title ? '' : '番組タイトルを 1 行目に')
-          : info.title ? '動画タイトルを 2 行目に' : '番組タイトルと動画タイトルを 1・2 行目に';
-        const text = (info.title ? '共有テキストから番組タイトルを入れました。' : '') +
-          (need ? need + '入力してください（自動では取得できません）。' : '') +
-          (gotImage ? '' : 'この URL では画像を取得できなかったため、「スクショを追加」から付けてください。');
+        const noImage = gotImage ? '' : 'この URL では画像を取得できなかったため、「スクショを追加」から付けてください。';
+        if (info.page && info.series) {
+          return { text: 'ABEMA のページからタイトルを受け取りました。' + noImage, ok: gotImage, line: null };
+        }
+        const need = p.kind === 'title' ? (info.series ? '' : '番組タイトルを 1 行目に')
+          : info.series ? '動画タイトルを 2 行目に' : '番組タイトルと動画タイトルを 1・2 行目に';
+        const text = (info.series ? '共有テキストから番組タイトルを入れました。' : '') +
+          (need ? need + '入力してください（ページ下のブックマークレットを使うと自動で入ります）。' : '') + noImage;
         return {
           text: text || '生成しました。',
           ok: gotImage && !need,
-          line: !need ? null : info.title ? 1 : 0,
+          line: !need ? null : info.series ? 1 : 0,
         };
       },
     }),
@@ -1480,8 +1527,10 @@
     return null;
   }
 
-  async function generate(raw) {
+  // fromPage: ブックマークレットで ABEMA のページから受け取ったタイトルなど（ABEMA の URL のときだけ使う）
+  async function generate(raw, fromPage = null) {
     const parsed = parseUrl(raw);
+    if (parsed && fromPage && parsed.service === 'abema') Object.assign(parsed, fromPage);
     if (!parsed) {
       requestSeq++;
       lastKey = '';
@@ -1718,8 +1767,76 @@
   }
   if (isMobile) urlInput.placeholder = 'URL を貼り付け';
 
-  // YouTube アプリの「共有」からこのアプリが選ばれたとき（?text= / ?url= で届く）
+  // --- ABEMA 用ブックマークレット -----------------------------------------
+  // このページからは ABEMA のページを読めない（CORS と、日本以外からのアクセスの拒否）ので、
+  // ABEMA のページの中でこのプログラムを動かし、パンくずリストの番組タイトル・動画タイトルと画像をここへ送る。
+  // ABEMA はページを移っても読み込み直さないので、構造化データ（JSON-LD）のパンくずリストは
+  // 最後の項目が今の URL のときだけ使い、そうでなければ画面のパンくずリスト（各項目の title）を使う。
+  // ※ ABEMA のページで単独で動くよう、外の変数は使わない（文字列にしてブックマークに入れるため）
+  function abemaBookmarklet(tool) {
+    if (location.hostname !== 'abema.tv') {
+      alert('ABEMA の動画ページを開いた状態で使ってください。');
+      return;
+    }
+    const here = location.origin + location.pathname.replace(/\/$/, '');
+    let names = [];
+    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const data = JSON.parse(script.textContent);
+        const items = (data && data['@type'] === 'BreadcrumbList' && data.itemListElement) || [];
+        if (items.length && String(items[items.length - 1].item || '').replace(/\/$/, '') === here) {
+          names = items.map((item) => String(item.name || '').trim());
+        }
+      } catch (e) { /* 読めないデータは飛ばす */ }
+    }
+    if (!names.length) {
+      names = Array.from(document.querySelectorAll('.com-m-BreadcrumbList__item')).map((li) => {
+        const el = li.querySelector('[title]');
+        return ((el && el.getAttribute('title')) || li.textContent || '').trim();
+      });
+    }
+    const og = (document.querySelector('meta[property="og:image"]') || {}).content || '';
+    const image = (og.match(/^https:\/\/image\.p-c2-x\.abema-tv\.com\/image\/([^?#]+)/) || [])[1] || '';
+    const query = new URLSearchParams({
+      url: here,
+      series: names[2] || '',
+      episode: names[3] || '',
+      image: image.startsWith('assets/') ? '' : image,
+    });
+    location.href = tool + '?' + query;
+  }
+
+  // 改行と字下げを詰めて javascript: の URL にする（文はすべて ; で終えているので詰めても意味は変わらない）
+  const TOOL_URL = location.origin + location.pathname;
+  const BOOKMARKLET = 'javascript:' + encodeURIComponent(
+    '(' + abemaBookmarklet.toString().replace(/\/\*.*?\*\//g, '').replace(/\n\s*/g, ' ') + ')(' + JSON.stringify(TOOL_URL) + ');');
+
+  const bookmarkletEl = $('bookmarklet');
+  bookmarkletEl.href = BOOKMARKLET;
+  bookmarkletEl.addEventListener('click', (e) => {
+    e.preventDefault(); // このページで押しても意味がないので、登録のしかたを案内する
+    setStatus('「X共有」はブックマークバーへドラッグして登録し、ABEMA の動画ページで押してください。');
+  });
+  $('copyBookmarklet').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(BOOKMARKLET);
+      setStatus('ブックマークレットのコードをコピーしました。ブックマークのアドレス（URL）欄に貼り付けてください。', 'ok');
+    } catch {
+      setStatus('コピーできませんでした。', 'err');
+    }
+  });
+
+  // ブックマークレットで ABEMA のページから届いたタイトルと画像（?url=…&series=…&episode=…&image=…）
   const params = new URLSearchParams(location.search);
+  const pageImage = params.get('image') || '';
+  const fromPage = params.has('series') || params.has('episode') ? {
+    fromPage: true,
+    pageSeries: (params.get('series') || '').trim().slice(0, 200),
+    pageEpisode: (params.get('episode') || '').trim().slice(0, 200),
+    pageImage: /^[A-Za-z0-9_\-./]+$/.test(pageImage) && !pageImage.includes('..') ? pageImage : '',
+  } : null;
+
+  // YouTube アプリの「共有」からこのアプリが選ばれたとき（?text= / ?url= で届く）
   const sharedKeys = ['url', 'text', 'title'];
   const sharedValues = sharedKeys.map((k) => (params.get(k) || '').trim()).filter(Boolean);
   if (sharedValues.length) {
@@ -1727,7 +1844,7 @@
     history.replaceState(null, '', location.pathname);
     if (shared) {
       urlInput.value = parseUrl(shared).shareUrl;
-      generate(shared);
+      generate(shared, fromPage);
     } else {
       // 原因を調べられるよう、受け取った内容をそのまま見せる
       const received = sharedValues.join(' ／ ');
